@@ -134,7 +134,7 @@ def parse_imported_points(uploaded_file):
 
     df = df[["sku", "points"]].dropna(subset=["sku"])
     df["sku"] = df["sku"].astype(str).str.strip()
-    df["points"] = pd.to_numeric(df["points"], errors="coerce").fillna(0).astype(int)
+    df["points"] = pd.to_numeric(df["points"].astype(str), errors="coerce").fillna(0).astype(int)
     return dict(zip(df["sku"], df["points"])), None
 
 
