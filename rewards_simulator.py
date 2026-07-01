@@ -10,7 +10,13 @@ MONSTER_EXCEL = DATA_DIR / "M-rewards-monster.xlsx"
 RAW_DATA_PATH = DATA_DIR / "rewards_raw_data.csv"
 SKU_BEHAVIOR_PATH = DATA_DIR / "sku_monthly_behavior.csv"
 
-DEFAULT_REWARDS = {
+COCACOLA_REWARDS = {
+    "8 Dollar Rebate": 5000,
+    "Membership 9.99": 10000,
+    "Reward 3 (TBD)": 15000,
+}
+
+MONSTER_REWARDS = {
     "Reward 1": 6500,
     "Reward 2": 10000,
     "Reward 3": 12000,
@@ -159,7 +165,8 @@ def render_import_uploader(prefix, valid_skus, sku_to_title, bulk_state_key):
 def render_reward_thresholds(prefix, defaults):
     st.markdown("---")
     st.subheader("Reward Thresholds")
-    cols = st.columns(5)
+    n = len(defaults)
+    cols = st.columns(n)
     thresholds = {}
     for i, (name, default_val) in enumerate(defaults.items()):
         with cols[i]:
@@ -179,7 +186,7 @@ def render_simulation_results(store_points, reward_thresholds):
     m3.metric("Median Points/Store", f"{store_points['total_points'].median():,.0f}")
     m4.metric("Max Points/Store", f"{store_points['total_points'].max():,.0f}")
 
-    r_cols = st.columns(5)
+    r_cols = st.columns(len(reward_thresholds))
     for i, (name, threshold) in enumerate(reward_thresholds.items()):
         count = int(store_points[name].sum())
         pct = count / total_stores * 100 if total_stores > 0 else 0
@@ -301,7 +308,7 @@ def cocacola_page(raw):
     for title, pts in st.session_state.coke_bulk_points.items():
         points_lookup[title] = pts
 
-    reward_thresholds = render_reward_thresholds("coke", DEFAULT_REWARDS)
+    reward_thresholds = render_reward_thresholds("coke", COCACOLA_REWARDS)
 
     st.markdown("---")
     sku_to_title = dict(zip(cocacola_skus_df["sku"], cocacola_skus_df["product_title"]))
@@ -387,7 +394,7 @@ def monster_page(raw):
     for title, pts in st.session_state.monster_bulk_points.items():
         points_lookup[title] = pts
 
-    reward_thresholds = render_reward_thresholds("monster", DEFAULT_REWARDS)
+    reward_thresholds = render_reward_thresholds("monster", MONSTER_REWARDS)
 
     st.markdown("---")
     sku_to_title = dict(zip(monster_skus_df["sku"], monster_skus_df["product_title"]))
