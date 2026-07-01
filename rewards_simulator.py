@@ -134,8 +134,13 @@ def parse_imported_points(uploaded_file):
 
     df = df[["sku", "points"]].dropna(subset=["sku"])
     df["sku"] = df["sku"].astype(str).str.strip()
-    df["points"] = pd.to_numeric(df["points"].astype(str), errors="coerce").fillna(0).astype(int)
-    return dict(zip(df["sku"], df["points"])), None
+    result = {}
+    for _, row in df.iterrows():
+        try:
+            result[str(row["sku"])] = int(float(row["points"]))
+        except (ValueError, TypeError):
+            result[str(row["sku"])] = 0
+    return result, None
 
 
 def render_import_uploader(prefix, valid_skus, sku_to_title, bulk_state_key):
