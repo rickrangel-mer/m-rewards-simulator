@@ -7,6 +7,7 @@ from pathlib import Path
 DATA_DIR = Path(__file__).parent
 COCACOLA_EXCEL = DATA_DIR / "M-rewards-cocacola.xlsx"
 MONSTER_EXCEL = DATA_DIR / "M-rewards-monster.xlsx"
+FERRERA_EXCEL = DATA_DIR / "M-rewards-ferrera.xlsx"
 RAW_DATA_PATH = DATA_DIR / "rewards_raw_data.csv"
 SKU_BEHAVIOR_PATH = DATA_DIR / "sku_monthly_behavior.csv"
 
@@ -17,6 +18,14 @@ COCACOLA_REWARDS = {
 }
 
 MONSTER_REWARDS = {
+    "Reward 1": 6500,
+    "Reward 2": 10000,
+    "Reward 3": 12000,
+    "Reward 4": 15000,
+    "Reward 5": 35000,
+}
+
+FERRERA_REWARDS = {
     "Reward 1": 6500,
     "Reward 2": 10000,
     "Reward 3": 12000,
@@ -77,6 +86,26 @@ def load_monster_data():
             "grade": row[3] if row[3] not in (0, None) else "",
             "l30d": row[4] if row[4] not in (0, None) else 0,
             "current_points": int(proposed) if isinstance(proposed, (int, float)) else 0,
+        })
+    wb.close()
+    return pd.DataFrame(records)
+
+
+@st.cache_data
+def load_ferrera_data():
+    wb = openpyxl.load_workbook(FERRERA_EXCEL, read_only=True)
+    ws = wb[wb.sheetnames[0]]
+    records = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row[0]:
+            continue
+        points = row[8] if row[8] is not None else 0
+        records.append({
+            "sku": row[0],
+            "brand": row[1],
+            "product_title": row[2],
+            "category": row[5],
+            "current_points": int(points) if isinstance(points, (int, float)) else 0,
         })
     wb.close()
     return pd.DataFrame(records)
@@ -411,17 +440,106 @@ def monster_page(raw):
     render_simulation_results(store_points, reward_thresholds)
 
 
+def ferrera_page(raw):
+    st.title("Ferrera — M-Rewards Simulator")
+
+    ferrera_skus_df = load_ferrera_data()
+    valid_skus = set(ferrera_skus_df["sku"].dropna())
+
+    year, month, month_label = render_month_picker("ferrera", raw[raw["sku"].isin(valid_skus)])
+    st.caption(f"Simulating with {month_label} ordering data")
+
+    pen = compute_store_penetration(raw, valid_skus)
+    ferrera_skus_df = ferrera_skus_df.merge(pen, on="sku", how="left")
+    ferrera_skus_df["store_penetration"] = ferrera_skus_df["store_penetration"].fillna(0).astype(int)
+
+    st.subheader("SKU Point Editor")
+
+    if "ferrera_bulk_points" not in st.session_state:
+        st.session_state.ferrera_bulk_points = {}
+
+    ferrera_sku_to_title = dict(zip(ferrera_skus_df["sku"], ferrera_skus_df["product_title"]))
+    render_import_uploader("ferrera", valid_skus, ferrera_sku_to_title, "ferrera_bulk_points")
+
+    edit_df = ferrera_skus_df[["product_title", "brand", "category", "store_penetration", "current_points"]].copy()
+    edit_df.columns = ["Product Title", "Brand", "Category", "Store Penetration", "Current Points"]
+    edit_df["Proposed Points"] = 0
+
+    for title, pts in st.session_state.ferrera_bulk_points.items():
+        mask = edit_df["Product Title"] == title
+        edit_df.loc[mask, "Proposed Points"] = pts
+
+    bulk_col1, bulk_col2, bulk_col3 = st.columns([2, 1, 1])
+    with bulk_col1:
+        search = st.text_input("Search SKUs", placeholder="Type to filter...", key="ferrera_search")
+    with bulk_col2:
+        bulk_value = st.number_input("Bulk point value", min_value=0, max_value=5000, value=100, step=50, key="ferrera_bulk_val")
+    with bulk_col3:
+        st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
+        apply_bulk = st.button("Apply to selected", use_container_width=True, key="ferrera_bulk_btn")
+
+    edit_df["Select"] = False
+    display_df = edit_df
+    if search:
+        mask = display_df["Product Title"].str.contains(search, case=False, na=False)
+        display_df = display_df[mask]
+
+    col_order = ["Select", "Product Title", "Brand", "Category", "Store Penetration", "Current Points", "Proposed Points"]
+    edited = st.data_editor(
+        display_df[col_order],
+        column_config={
+            "Select": st.column_config.CheckboxColumn(default=False, width="small"),
+            "Product Title": st.column_config.TextColumn(disabled=True, width="large"),
+            "Brand": st.column_config.TextColumn(disabled=True),
+            "Category": st.column_config.TextColumn(disabled=True),
+            "Store Penetration": st.column_config.NumberColumn(disabled=True),
+            "Current Points": st.column_config.NumberColumn(disabled=True),
+            "Proposed Points": st.column_config.NumberColumn(min_value=0, max_value=5000, step=50),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="ferrera_sku_editor",
+    )
+
+    if apply_bulk:
+        selected_titles = edited.loc[edited["Select"] == True, "Product Title"].tolist()
+        if selected_titles:
+            for title in selected_titles:
+                st.session_state.ferrera_bulk_points[title] = bulk_value
+            st.rerun()
+
+    points_lookup = dict(zip(edit_df["Product Title"], edit_df["Current Points"]))
+    for _, row in edited.iterrows():
+        if row["Proposed Points"] > 0:
+            points_lookup[row["Product Title"]] = row["Proposed Points"]
+    for title, pts in st.session_state.ferrera_bulk_points.items():
+        points_lookup[title] = pts
+
+    reward_thresholds = render_reward_thresholds("ferrera", FERRERA_REWARDS)
+
+    st.markdown("---")
+    sku_to_title = dict(zip(ferrera_skus_df["sku"], ferrera_skus_df["product_title"]))
+    month_orders = get_month_orders(raw, year, month, valid_skus)
+    month_orders = month_orders.merge(
+        ferrera_skus_df[["sku", "product_title"]], on="sku", how="inner"
+    )
+    store_points = simulate(month_orders, sku_to_title, points_lookup, reward_thresholds)
+    render_simulation_results(store_points, reward_thresholds)
+
+
 def main():
     st.set_page_config(page_title="M-Rewards Simulator", layout="wide")
 
-    brand = st.sidebar.radio("Brand", ["Coca-Cola", "Monster"], index=0)
+    brand = st.sidebar.radio("Brand", ["Coca-Cola", "Monster", "Ferrera"], index=0)
 
     raw = load_raw_data()
 
     if brand == "Coca-Cola":
         cocacola_page(raw)
-    else:
+    elif brand == "Monster":
         monster_page(raw)
+    else:
+        ferrera_page(raw)
 
 
 if __name__ == "__main__":
