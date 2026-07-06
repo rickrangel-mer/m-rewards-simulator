@@ -189,7 +189,6 @@ def render_import_uploader(prefix, valid_skus, sku_to_title, bulk_state_key):
                     if title:
                         st.session_state[bulk_state_key][title] = pts
                 st.success(f"Imported points for {len(matched)} SKUs." + (f" {skipped} SKUs skipped (not in this brand)." if skipped else ""))
-                st.rerun()
             else:
                 st.warning("No matching SKUs found in the uploaded file.")
 
