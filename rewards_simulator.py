@@ -26,11 +26,9 @@ MONSTER_REWARDS = {
 }
 
 FERRERA_REWARDS = {
-    "Reward 1": 6500,
+    "Reward 1": 5000,
     "Reward 2": 10000,
-    "Reward 3": 12000,
-    "Reward 4": 15000,
-    "Reward 5": 35000,
+    "Reward 3": 15000,
 }
 
 
@@ -199,14 +197,42 @@ def render_import_uploader(prefix, valid_skus, sku_to_title, bulk_state_key):
 def render_reward_thresholds(prefix, defaults):
     st.markdown("---")
     st.subheader("Reward Thresholds")
-    n = len(defaults)
-    cols = st.columns(n)
-    thresholds = {}
-    for i, (name, default_val) in enumerate(defaults.items()):
-        with cols[i]:
-            thresholds[name] = st.number_input(
-                f"{name} (pts)", min_value=0, value=default_val, step=500, key=f"{prefix}_{name}"
-            )
+
+    state_key = f"{prefix}_rewards_list"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = list(defaults.items())
+
+    rewards_list = st.session_state[state_key]
+
+    to_remove = None
+    if rewards_list:
+        cols = st.columns(len(rewards_list))
+        thresholds = {}
+        for i, (name, default_val) in enumerate(rewards_list):
+            with cols[i]:
+                thresholds[name] = st.number_input(
+                    f"{name} (pts)", min_value=0, value=default_val, step=500, key=f"{prefix}_{name}"
+                )
+                if st.button("Remove", key=f"{prefix}_remove_{i}", use_container_width=True):
+                    to_remove = i
+    else:
+        thresholds = {}
+
+    if to_remove is not None:
+        st.session_state[state_key].pop(to_remove)
+        st.rerun()
+
+    add_col1, add_col2, add_col3 = st.columns([2, 2, 1])
+    with add_col1:
+        new_name = st.text_input("New reward name", value=f"Reward {len(rewards_list) + 1}", key=f"{prefix}_new_name")
+    with add_col2:
+        new_pts = st.number_input("Points", min_value=0, value=5000, step=500, key=f"{prefix}_new_pts")
+    with add_col3:
+        st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
+        if st.button("Add Reward", key=f"{prefix}_add_reward", use_container_width=True):
+            st.session_state[state_key].append((new_name, new_pts))
+            st.rerun()
+
     return thresholds
 
 
