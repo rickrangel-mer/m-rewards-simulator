@@ -315,8 +315,8 @@ def cocacola_page(raw):
     coke_sku_to_title = dict(zip(cocacola_skus_df["sku"], cocacola_skus_df["product_title"]))
     render_import_uploader("coke", valid_skus, coke_sku_to_title, "coke_bulk_points")
 
-    edit_df = cocacola_skus_df[["product_title", "store_penetration", "current_points"]].copy()
-    edit_df.columns = ["Product Title", "Store Penetration", "Current Points"]
+    edit_df = cocacola_skus_df[["sku", "product_title", "store_penetration", "current_points"]].copy()
+    edit_df.columns = ["SKU", "Product Title", "Store Penetration", "Current Points"]
     edit_df["Proposed Points"] = 0
 
     for title, pts in st.session_state.coke_bulk_points.items():
@@ -335,14 +335,15 @@ def cocacola_page(raw):
     edit_df["Select"] = False
     display_df = edit_df
     if search:
-        mask = display_df["Product Title"].str.contains(search, case=False, na=False)
+        mask = display_df["Product Title"].str.contains(search, case=False, na=False) | display_df["SKU"].astype(str).str.contains(search, case=False, na=False)
         display_df = display_df[mask]
 
-    col_order = ["Select", "Product Title", "Store Penetration", "Current Points", "Proposed Points"]
+    col_order = ["Select", "SKU", "Product Title", "Store Penetration", "Current Points", "Proposed Points"]
     edited = st.data_editor(
         display_df[col_order],
         column_config={
             "Select": st.column_config.CheckboxColumn(default=False, width="small"),
+            "SKU": st.column_config.TextColumn(disabled=True),
             "Product Title": st.column_config.TextColumn(disabled=True, width="large"),
             "Store Penetration": st.column_config.NumberColumn(disabled=True),
             "Current Points": st.column_config.NumberColumn(disabled=True),
@@ -359,6 +360,15 @@ def cocacola_page(raw):
             for title in selected_titles:
                 st.session_state.coke_bulk_points[title] = bulk_value
             st.rerun()
+
+    export_df = edited[["SKU", "Product Title", "Store Penetration", "Current Points", "Proposed Points"]].copy()
+    st.download_button(
+        "Export SKU Data",
+        export_df.to_csv(index=False),
+        file_name="cocacola_sku_export.csv",
+        mime="text/csv",
+        key="coke_export",
+    )
 
     points_lookup = dict(zip(edit_df["Product Title"], edit_df["Current Points"]))
     for _, row in edited.iterrows():
@@ -400,8 +410,8 @@ def monster_page(raw):
     monster_sku_to_title = dict(zip(monster_skus_df["sku"], monster_skus_df["product_title"]))
     render_import_uploader("monster", valid_skus, monster_sku_to_title, "monster_bulk_points")
 
-    edit_df = monster_skus_df[["product_title", "size", "store_penetration", "current_points"]].copy()
-    edit_df.columns = ["Product Title", "Size", "Store Penetration", "Current Points"]
+    edit_df = monster_skus_df[["sku", "product_title", "size", "store_penetration", "current_points"]].copy()
+    edit_df.columns = ["SKU", "Product Title", "Size", "Store Penetration", "Current Points"]
     edit_df["Proposed Points"] = 0
 
     for title, pts in st.session_state.monster_bulk_points.items():
@@ -420,14 +430,15 @@ def monster_page(raw):
     edit_df["Select"] = False
     display_df = edit_df
     if search:
-        mask = display_df["Product Title"].str.contains(search, case=False, na=False)
+        mask = display_df["Product Title"].str.contains(search, case=False, na=False) | display_df["SKU"].astype(str).str.contains(search, case=False, na=False)
         display_df = display_df[mask]
 
-    col_order = ["Select", "Product Title", "Size", "Store Penetration", "Current Points", "Proposed Points"]
+    col_order = ["Select", "SKU", "Product Title", "Size", "Store Penetration", "Current Points", "Proposed Points"]
     edited = st.data_editor(
         display_df[col_order],
         column_config={
             "Select": st.column_config.CheckboxColumn(default=False, width="small"),
+            "SKU": st.column_config.TextColumn(disabled=True),
             "Product Title": st.column_config.TextColumn(disabled=True, width="large"),
             "Size": st.column_config.TextColumn(disabled=True),
             "Store Penetration": st.column_config.NumberColumn(disabled=True),
@@ -445,6 +456,15 @@ def monster_page(raw):
             for title in selected_titles:
                 st.session_state.monster_bulk_points[title] = bulk_value
             st.rerun()
+
+    export_df = edited[["SKU", "Product Title", "Size", "Store Penetration", "Current Points", "Proposed Points"]].copy()
+    st.download_button(
+        "Export SKU Data",
+        export_df.to_csv(index=False),
+        file_name="monster_sku_export.csv",
+        mime="text/csv",
+        key="monster_export",
+    )
 
     points_lookup = dict(zip(edit_df["Product Title"], edit_df["Current Points"]))
     for _, row in edited.iterrows():
@@ -486,8 +506,8 @@ def ferrera_page(raw):
     ferrera_sku_to_title = dict(zip(ferrera_skus_df["sku"], ferrera_skus_df["product_title"]))
     render_import_uploader("ferrera", valid_skus, ferrera_sku_to_title, "ferrera_bulk_points")
 
-    edit_df = ferrera_skus_df[["product_title", "brand", "category", "store_penetration", "current_points"]].copy()
-    edit_df.columns = ["Product Title", "Brand", "Category", "Store Penetration", "Current Points"]
+    edit_df = ferrera_skus_df[["sku", "product_title", "brand", "category", "store_penetration", "current_points"]].copy()
+    edit_df.columns = ["SKU", "Product Title", "Brand", "Category", "Store Penetration", "Current Points"]
     edit_df["Proposed Points"] = 0
 
     for title, pts in st.session_state.ferrera_bulk_points.items():
@@ -506,14 +526,15 @@ def ferrera_page(raw):
     edit_df["Select"] = False
     display_df = edit_df
     if search:
-        mask = display_df["Product Title"].str.contains(search, case=False, na=False)
+        mask = display_df["Product Title"].str.contains(search, case=False, na=False) | display_df["SKU"].astype(str).str.contains(search, case=False, na=False)
         display_df = display_df[mask]
 
-    col_order = ["Select", "Product Title", "Brand", "Category", "Store Penetration", "Current Points", "Proposed Points"]
+    col_order = ["Select", "SKU", "Product Title", "Brand", "Category", "Store Penetration", "Current Points", "Proposed Points"]
     edited = st.data_editor(
         display_df[col_order],
         column_config={
             "Select": st.column_config.CheckboxColumn(default=False, width="small"),
+            "SKU": st.column_config.TextColumn(disabled=True),
             "Product Title": st.column_config.TextColumn(disabled=True, width="large"),
             "Brand": st.column_config.TextColumn(disabled=True),
             "Category": st.column_config.TextColumn(disabled=True),
@@ -532,6 +553,15 @@ def ferrera_page(raw):
             for title in selected_titles:
                 st.session_state.ferrera_bulk_points[title] = bulk_value
             st.rerun()
+
+    export_df = edited[["SKU", "Product Title", "Brand", "Category", "Store Penetration", "Current Points", "Proposed Points"]].copy()
+    st.download_button(
+        "Export SKU Data",
+        export_df.to_csv(index=False),
+        file_name="ferrera_sku_export.csv",
+        mime="text/csv",
+        key="ferrera_export",
+    )
 
     points_lookup = dict(zip(edit_df["Product Title"], edit_df["Current Points"]))
     for _, row in edited.iterrows():
