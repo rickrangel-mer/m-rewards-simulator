@@ -2,5 +2,5 @@
 builder = "NIXPACKS"
 
 [deploy]
-startCommand = "streamlit run rewards_simulator.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false"
+startCommand = "sh start.sh"
 restartPolicyType = "ON_FAILURE"

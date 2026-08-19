@@ -42,14 +42,19 @@ Add Railway Postgres. Both services should receive `DATABASE_URL` (Railway does 
 
 ### 2. Web service (Streamlit)
 
-- Start command: `streamlit run rewards_simulator.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false`
-- Env: `DATABASE_URL` only. No AWS keys.
-
-`railway.toml` in this repo already sets that start command.
+- Start command comes from `railway.toml` (`sh start.sh` → Streamlit by default).
+- Env: `DATABASE_URL` only. Do **not** set `SERVICE_ROLE`.
 
 ### 3. Cron service (monthly Athena pull)
 
-- Start command: `python refresh_orders.py`
+- Same repo and same start command (`sh start.sh`), but set:
+
+```
+SERVICE_ROLE=refresh
+```
+
+That makes `start.sh` run `python refresh_orders.py` instead of Streamlit.
+
 - Settings → Cron Schedule: `0 6 1 * *` (06:00 UTC on the 1st)
 - The process must exit when finished (this script does).
 
