@@ -251,13 +251,45 @@ def fetch_order_data(sku_list, start: date, end: date, connect_fn=None) -> pd.Da
 # ---------------------------------------------------------------------------
 
 def get_database_url() -> str:
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL is not set. Point it at Railway Postgres "
-            "(or a local Postgres instance) before loading order data."
+    """Resolve Postgres URL from Railway-style env vars."""
+    for key in ("DATABASE_URL", "DATABASE_PRIVATE_URL"):
+        url = os.environ.get(key, "").strip()
+        if url and not url.startswith("${{"):
+            return url
+
+    host = os.environ.get("PGHOST", "").strip()
+    port = os.environ.get("PGPORT", "5432").strip()
+    user = os.environ.get("PGUSER", "").strip()
+    password = os.environ.get("PGPASSWORD", "")
+    database = os.environ.get("PGDATABASE", "").strip()
+
+    if host and user and password and database:
+        from urllib.parse import quote_plus
+
+        return (
+            f"postgresql://{quote_plus(user)}:{quote_plus(password)}"
+            f"@{host}:{port}/{quote_plus(database)}"
         )
-    return url
+
+    present = [k for k in (
+        "DATABASE_URL", "DATABASE_PRIVATE_URL",
+        "PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE",
+    ) if os.environ.get(k)]
+
+    hint = (
+        "On the **web** service Variables tab, add a reference: "
+        "`DATABASE_URL` → `${{YourPostgresServiceName.DATABASE_URL}}` "
+        "(use your Postgres service's exact name). Then redeploy web."
+    )
+    if present:
+        raise RuntimeError(
+            "Could not build a Postgres connection string. "
+            f"Found {', '.join(present)} but not a usable DATABASE_URL. {hint}"
+        )
+    raise RuntimeError(
+        "DATABASE_URL is not set. Point the **web** service at Railway Postgres, "
+        f"then redeploy. {hint}"
+    )
 
 
 def get_connection(database_url: str | None = None):
