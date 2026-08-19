@@ -1,88 +1,10 @@
-import os
 from pathlib import Path
 
-import openpyxl
 import pandas as pd
-from pyathena import connect
 
-NUM_MONTHS = 6
+from data import NUM_MONTHS, load_sku_mapping, read_orders
+
 OUTPUT_DIR = Path(__file__).parent
-EXCEL_PATH = OUTPUT_DIR / "M-rewards-cocacola.xlsx"
-CACHE_PATH = OUTPUT_DIR / "rewards_raw_data.csv"
-
-ATHENA_REGION = "us-west-2"
-ATHENA_S3_STAGING = "s3://mercaso-data-platform-prod/athena/sql/"
-
-
-# ---------------------------------------------------------------------------
-# I/O: Excel loading
-# ---------------------------------------------------------------------------
-
-def load_sku_mapping(excel_path=EXCEL_PATH):
-    wb = openpyxl.load_workbook(excel_path, read_only=True)
-
-    ims_sheet = wb["ims"]
-    sku_to_title = {}
-    for row in ims_sheet.iter_rows(min_row=2, values_only=True):
-        sku_to_title[row[3]] = row[4]  # col D = SKU, col E = Product Title - Long
-
-    ws = wb["WOS Ranked"]
-    records = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        sku = row[2]   # col C
-        if not sku:
-            continue
-        records.append({
-            "sku": sku,
-            "product_title": sku_to_title.get(sku, row[3]),  # fallback to col D
-            "category": row[1],   # col B
-            "rewards_match": row[11],  # col L
-            "points": row[10],  # col K
-        })
-    wb.close()
-
-    return pd.DataFrame(records)
-
-
-# ---------------------------------------------------------------------------
-# I/O: Athena query with cache
-# ---------------------------------------------------------------------------
-
-def fetch_order_data(sku_list, cache_path=CACHE_PATH):
-    if cache_path.exists():
-        print(f"Loading cached data from {cache_path}")
-        df = pd.read_csv(cache_path, parse_dates=["order_date"])
-        return df
-
-    print("Querying Athena (no cache found)...")
-    sku_values = ", ".join(f"'{s}'" for s in sku_list)
-    query = f"""
-    SELECT
-        o.store_id,
-        li.sku,
-        DATE(li.order_item_created_at) AS order_date,
-        SUM(li.initial_quantity)       AS total_quantity
-    FROM dwm.dwm_trade_line_item_detail_full li
-    JOIN dwm.dwm_trade_order_detail_full o
-        ON li.order_id = o.order_id
-       AND o.dt = (SELECT MAX(dt) FROM dwm.dwm_trade_order_detail_full)
-    WHERE li.dt = (SELECT MAX(dt) FROM dwm.dwm_trade_line_item_detail_full)
-      AND li.order_item_created_at >= TIMESTAMP '2026-01-01'
-      AND li.sku IN ({sku_values})
-    GROUP BY o.store_id, li.sku, DATE(li.order_item_created_at)
-    ORDER BY o.store_id, li.sku, DATE(li.order_item_created_at)
-    """
-
-    conn = connect(
-        s3_staging_dir=ATHENA_S3_STAGING,
-        region_name=ATHENA_REGION,
-    )
-    df = pd.read_sql(query, conn)
-    df["order_date"] = pd.to_datetime(df["order_date"])
-
-    df.to_csv(cache_path, index=False)
-    print(f"Cached {len(df):,} rows to {cache_path}")
-    return df
 
 
 # ---------------------------------------------------------------------------
@@ -213,9 +135,9 @@ if __name__ == "__main__":
     print(f"  {len(sku_mapping)} SKUs loaded ({sku_mapping['rewards_match'].notna().sum()} rewards)")
 
     rewards_skus = set(sku_mapping.loc[sku_mapping["rewards_match"].notna(), "sku"])
-    all_skus = list(sku_mapping["sku"])
 
-    order_data = fetch_order_data(all_skus)
+    print("Loading order data from Postgres...")
+    order_data = read_orders()
     print(f"  {len(order_data):,} order rows, {order_data['store_id'].nunique():,} stores")
 
     print("Assigning store cohorts...")
@@ -227,16 +149,16 @@ if __name__ == "__main__":
     print("Computing SKU metrics...")
     sku_metrics = compute_sku_metrics(order_data, sku_mapping, store_cohorts)
     sku_metrics.to_csv(OUTPUT_DIR / "sku_monthly_behavior.csv", index=False)
-    print(f"  Saved sku_monthly_behavior.csv ({len(sku_metrics)} rows)")
+    print(f"  Wrote local analysis copy sku_monthly_behavior.csv ({len(sku_metrics)} rows)")
 
     print("Computing store summaries...")
     store_summary = compute_store_summary(order_data, rewards_skus, store_cohorts)
     store_summary.to_csv(OUTPUT_DIR / "store_cohort_summary.csv", index=False)
-    print(f"  Saved store_cohort_summary.csv ({len(store_summary)} rows)")
+    print(f"  Wrote local analysis copy store_cohort_summary.csv ({len(store_summary)} rows)")
 
     print("Computing monthly trends...")
     monthly_trend = compute_monthly_trend(order_data, rewards_skus, store_cohorts)
     monthly_trend.to_csv(OUTPUT_DIR / "monthly_trend.csv", index=False)
-    print(f"  Saved monthly_trend.csv ({len(monthly_trend)} rows)")
+    print(f"  Wrote local analysis copy monthly_trend.csv ({len(monthly_trend)} rows)")
 
-    print("\nDone. All outputs in M-Rewards/")
+    print("\nDone. Source of truth is Postgres; CSV dumps are local analysis artifacts only.")

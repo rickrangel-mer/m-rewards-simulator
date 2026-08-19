@@ -1,15 +1,16 @@
 import altair as alt
-import openpyxl
 import pandas as pd
 import streamlit as st
-from pathlib import Path
 
-DATA_DIR = Path(__file__).parent
-COCACOLA_EXCEL = DATA_DIR / "M-rewards-cocacola.xlsx"
-MONSTER_EXCEL = DATA_DIR / "M-rewards-monster.xlsx"
-FERRERA_EXCEL = DATA_DIR / "M-rewards-ferrera.xlsx"
-RAW_DATA_PATH = DATA_DIR / "rewards_raw_data.csv"
-SKU_BEHAVIOR_PATH = DATA_DIR / "sku_monthly_behavior.csv"
+from data import (
+    format_month_label,
+    get_connection,
+    get_refresh_state,
+    load_cocacola_skus,
+    load_ferrera_skus,
+    load_monster_skus,
+    read_orders,
+)
 
 COCACOLA_REWARDS = {
     "8 Dollar Rebate": 5000,
@@ -33,80 +34,23 @@ FERRERA_REWARDS = {
 
 
 @st.cache_data
-def load_raw_data():
-    return pd.read_csv(RAW_DATA_PATH, parse_dates=["order_date"])
+def load_raw_data(_cache_month: str):
+    return read_orders()
 
 
 @st.cache_data
 def load_cocacola_data():
-    wb = openpyxl.load_workbook(COCACOLA_EXCEL, read_only=True)
-    ims = wb["ims"]
-    sku_to_title = {}
-    for row in ims.iter_rows(min_row=2, values_only=True):
-        if row[3]:
-            sku_to_title[row[3]] = row[4]
-    wb.close()
-
-    behavior = pd.read_csv(SKU_BEHAVIOR_PATH)
-    behavior = behavior[behavior["product_title"] != "Grand Total"]
-
-    sku_records = []
-    for _, brow in behavior.iterrows():
-        title = brow["product_title"]
-        sku = None
-        for s, t in sku_to_title.items():
-            if t == title:
-                sku = s
-                break
-        sku_records.append({
-            "sku": sku,
-            "product_title": title,
-            "store_penetration": brow["Sum of store_penetration"],
-            "current_points": int(brow["Proposed Points"]) if pd.notna(brow["Proposed Points"]) else 0,
-        })
-
-    return pd.DataFrame(sku_records)
+    return load_cocacola_skus()
 
 
 @st.cache_data
 def load_monster_data():
-    wb = openpyxl.load_workbook(MONSTER_EXCEL, read_only=True)
-    ws = wb["Sheet1"]
-    records = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row[0]:
-            continue
-        proposed = row[7] if row[7] is not None else 0
-        records.append({
-            "sku": row[0],
-            "size": row[1],
-            "product_title": row[2],
-            "grade": row[3] if row[3] not in (0, None) else "",
-            "l30d": row[4] if row[4] not in (0, None) else 0,
-            "current_points": int(proposed) if isinstance(proposed, (int, float)) else 0,
-        })
-    wb.close()
-    return pd.DataFrame(records)
+    return load_monster_skus()
 
 
 @st.cache_data
 def load_ferrera_data():
-    wb = openpyxl.load_workbook(FERRERA_EXCEL, read_only=True)
-    ws = wb[wb.sheetnames[0]]
-    records = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row[0]:
-            continue
-        points = row[8] if row[8] is not None else 0
-        records.append({
-            "sku": row[0],
-            "brand": row[1],
-            "product_title": row[2],
-            "category": row[5],
-            "current_points": int(points) if isinstance(points, (int, float)) else 0,
-        })
-    wb.close()
-    return pd.DataFrame(records)
+    return load_ferrera_skus()
 
 
 @st.cache_data
@@ -280,6 +224,9 @@ def render_simulation_results(store_points, reward_thresholds):
 
 
 def render_month_picker(prefix, raw):
+    if raw.empty:
+        st.warning("No order data for this brand yet.")
+        st.stop()
     raw["year_month"] = raw["order_date"].dt.to_period("M")
     available = sorted(raw["year_month"].unique())
     labels = [str(p) for p in available]
@@ -299,12 +246,7 @@ def cocacola_page(raw):
     st.caption(f"Simulating with {month_label} ordering data")
 
     pen = compute_store_penetration(raw, valid_skus)
-    cocacola_skus_df = cocacola_skus_df.merge(pen, on="sku", how="left", suffixes=("_orig", ""))
-    if "store_penetration_orig" in cocacola_skus_df.columns:
-        cocacola_skus_df["store_penetration"] = cocacola_skus_df["store_penetration"].fillna(
-            cocacola_skus_df["store_penetration_orig"]
-        )
-        cocacola_skus_df.drop(columns=["store_penetration_orig"], inplace=True)
+    cocacola_skus_df = cocacola_skus_df.merge(pen, on="sku", how="left")
     cocacola_skus_df["store_penetration"] = cocacola_skus_df["store_penetration"].fillna(0).astype(int)
 
     st.subheader("SKU Point Editor")
@@ -582,12 +524,45 @@ def ferrera_page(raw):
     render_simulation_results(store_points, reward_thresholds)
 
 
+def _load_refresh_state():
+    conn = get_connection()
+    try:
+        return get_refresh_state(conn)
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
 def main():
     st.set_page_config(page_title="M-Rewards Simulator", layout="wide")
 
     brand = st.sidebar.radio("Brand", ["Coca-Cola", "Monster", "Ferrera"], index=0)
 
-    raw = load_raw_data()
+    try:
+        state = _load_refresh_state()
+    except RuntimeError as exc:
+        st.error(str(exc))
+        st.stop()
+        return
+
+    cache_month = (state or {}).get("last_refreshed_month") or "none"
+    if state and state.get("last_refreshed_month"):
+        st.sidebar.caption(f"Order data through {format_month_label(state['last_refreshed_month'])}")
+    else:
+        st.sidebar.caption("Order data has not been refreshed yet. Run the monthly job.")
+
+    try:
+        raw = load_raw_data(cache_month)
+    except Exception as exc:
+        st.error(f"Could not load order data from Postgres: {exc}")
+        st.stop()
+        return
+
+    if raw.empty:
+        st.warning("No order rows in Postgres. Run `python refresh_orders.py` (or the Railway cron) to pull Athena data.")
+        st.stop()
+        return
 
     if brand == "Coca-Cola":
         cocacola_page(raw)
