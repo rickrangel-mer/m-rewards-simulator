@@ -23,6 +23,7 @@ from data import (
     DuplicateBrandError,
     catalog_download_frame,
     catalog_frame,
+    catalog_template_frame,
     create_brand,
     diff_catalog,
     ensure_schema,
@@ -262,6 +263,17 @@ def home():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/catalog-template.xlsx")
+def download_catalog_template():
+    buffer = io.BytesIO()
+    catalog_template_frame().to_excel(buffer, index=False)
+    return Response(
+        buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="brand_sku_template.xlsx"'},
+    )
 
 
 def run_brand_simulation(raw, skus_df, month_label: str, proposed: dict, rewards: list[tuple[str, int]]):
@@ -637,7 +649,7 @@ def _create_error(request: Request, message: str, return_to: str):
 async def create_brand_route(request: Request):
     form = await request.form()
     label = str(form.get("label") or "").strip()
-    slug = str(form.get("slug") or "").strip().lower() or slugify(label)
+    slug = slugify(label)
     theme = str(form.get("theme") or "default").strip().lower()
     return_to = str(form.get("return_to") or "/")
     if theme not in PALETTE_THEMES:
@@ -649,11 +661,11 @@ async def create_brand_route(request: Request):
     if not SLUG_RE.fullmatch(slug) or slug in RESERVED_SLUGS:
         return _create_error(
             request,
-            "URL slug must be lowercase letters, numbers, and hyphens (e.g. pepsi).",
+            "Display name must include letters or numbers so a page URL can be assigned.",
             return_to,
         )
     if get_brand(slug) is not None:
-        return _create_error(request, f"A brand with slug '{slug}' already exists.", return_to)
+        return _create_error(request, f"A brand named '{label}' already exists.", return_to)
     if not rewards:
         return _create_error(request, "Add at least one reward name and point cutoff.", return_to)
 
@@ -670,6 +682,6 @@ async def create_brand_route(request: Request):
     try:
         create_brand(slug, label, theme, incoming, rewards)
     except DuplicateBrandError:
-        return _create_error(request, f"A brand with slug '{slug}' already exists.", return_to)
+        return _create_error(request, f"A brand named '{label}' already exists.", return_to)
 
     return RedirectResponse(url=f"/brands/{slug}", status_code=303)

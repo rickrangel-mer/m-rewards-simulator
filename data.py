@@ -377,6 +377,11 @@ def catalog_download_frame(records: list[dict]) -> pd.DataFrame:
     return df[cols]
 
 
+def catalog_template_frame() -> pd.DataFrame:
+    """Empty canonical catalog workbook: headers only, for operators to fill in."""
+    return pd.DataFrame(columns=list(CATALOG_CORE_COLS) + list(CATALOG_EXTRA_COLS))
+
+
 def load_all_skus(conn=None) -> list[str]:
     """SKU union for Athena refresh: Postgres catalogs, seeded from Excel if empty."""
     conn, close = _borrow_connection(conn)

@@ -36,7 +36,6 @@
       <p class="section-caption">Required before you can simulate a new brand:</p>
       <ul class="requirements-list">
         <li>Display name</li>
-        <li>URL slug</li>
         <li>Participating SKUs Excel/CSV (sku, product_title, current_points)</li>
         <li>At least one reward name and point cutoff</li>
       </ul>
@@ -47,14 +46,13 @@
         Display name
         <input type="text" name="label" id="new-brand-label" required placeholder="Pepsi" />
       </label>
-      <label>
-        URL slug
-        <input type="text" name="slug" id="new-brand-slug" required placeholder="pepsi" pattern="[a-z0-9]+(-[a-z0-9]+)*" />
-      </label>
-      <label class="file-label">
-        Participating SKUs Excel/CSV
-        <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
-      </label>
+      <div class="import-row new-brand-skus">
+        <label class="file-label">
+          Participating SKUs Excel/CSV
+          <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
+        </label>
+        <a class="button secondary" href="/catalog-template.xlsx" download="brand_sku_template.xlsx">Download template</a>
+      </div>
       <p class="section-caption">New SKUs appear in simulations after the next Athena refresh. If these SKUs already have order rows, results show immediately.</p>
 
       <fieldset class="new-brand-rewards" id="new-brand-rewards">
@@ -94,20 +92,11 @@
       const dialog = document.getElementById("new-brand-dialog");
       const openBtn = document.getElementById("new-brand-open");
       const cancelBtn = document.getElementById("new-brand-cancel");
-      const nameInput = document.getElementById("new-brand-label");
-      const slugInput = document.getElementById("new-brand-slug");
       const addReward = document.getElementById("new-brand-add-reward");
       const rewardsWrap = document.getElementById("new-brand-rewards");
-      let slugEdited = false;
 
       openBtn && openBtn.addEventListener("click", function () { dialog.showModal(); });
       cancelBtn && cancelBtn.addEventListener("click", function () { dialog.close(); });
-      slugInput && slugInput.addEventListener("input", function () { slugEdited = true; });
-      nameInput && nameInput.addEventListener("input", function () {
-        if (slugEdited || !slugInput) return;
-        slugInput.value = nameInput.value.trim().toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-      });
       addReward && addReward.addEventListener("click", function () {
         const row = rewardsWrap.querySelector(".new-brand-reward");
         if (!row) return;

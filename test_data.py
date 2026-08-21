@@ -10,6 +10,7 @@ from data import (
     DuplicateBrandError,
     backfill_windows,
     catalog_frame,
+    catalog_template_frame,
     create_brand,
     diff_catalog,
     ensure_schema,
@@ -494,6 +495,14 @@ def test_catalog_frame_round_trip():
     assert list(df["sku"]) == ["A"]
     assert int(df["current_points"].iloc[0]) == 10
     assert df["brand"].iloc[0] == "CC"
+
+
+def test_catalog_template_frame_has_canonical_headers():
+    df = catalog_template_frame()
+    assert list(df.columns) == [
+        "sku", "product_title", "current_points", "size", "brand", "category",
+    ]
+    assert df.empty
 
 
 def test_seed_brand_catalogs_skips_when_populated():
