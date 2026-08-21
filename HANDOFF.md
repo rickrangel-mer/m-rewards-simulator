@@ -1,9 +1,10 @@
-# Handoff: M-Rewards website UX optimization
+# Handoff: Persist proposed points and rewards (P0)
 
 **Owner:** Rick (PM)  
 **Repo:** `rickrangel-mer/m-rewards-simulator`  
-**Branch baseline:** `main` (FastAPI site live; Streamlit removed)  
-**Next focus:** Page sectioning so controls sit with the outcomes they affect
+**Branch baseline:** `main` (FastAPI site live; page sectioning in PR #3)  
+**Next focus:** Save SKU proposed points, reward names, and reward thresholds in Railway Postgres so they survive refresh and are shared with a coworker  
+**Product list:** [`backlog.md`](backlog.md) (this is P0 only)
 
 ---
 
@@ -11,135 +12,179 @@
 
 Internal simulator for Mercaso M-Rewards. For a brand (Coca-Cola / Monster / Ferrera), pick a month of historical orders, set points per SKU and reward thresholds, and see how many stores would earn each reward.
 
-**Data:**
+**Data today:**
 - Order snapshots in Railway Postgres (`orders`, `refresh_state`)
 - Monthly Athena pull via cron (`SERVICE_ROLE=refresh` → `refresh_orders.py`)
-- Brand SKU/points config in Excel workbooks in the repo
+- Brand SKU **lists** and **current** points in Excel workbooks in the repo
+- Proposed points + reward edits in a **12-hour browser cookie** (`SessionMiddleware` in [`app.py`](app.py), `max_age=60 * 60 * 12`)
 - Web app never talks to Athena
 
 ---
 
-## What the “Points Distribution” graph is
+## The problem
 
-It is a **histogram of total points earned per store** for the selected simulation month.
+A coworker opens a brand page, types proposed points / reward names / cutoffs, and hits Update Simulation. That only lives in **their** session cookie. After ~12 hours, a new browser, a Railway web redeploy that drops cookies, or a teammate opening the same URL, the site falls back to Excel `current_points` and `BRAND_DEFAULTS` rewards. They have to re-enter everything.
 
-- **X-axis (implicit):** buckets of store total points (e.g. 0–200, 200–400, …)
-- **Y-axis (bar height):** how many stores fall in that bucket
-- Built in `summarize_results()` in [`simulator.py`](simulator.py): takes each store’s `total_points`, clips the top 1% so outliers don’t squash the chart, bins into ~10–40 buckets, counts stores per bucket
-- Rendered as CSS bars in [`templates/brand.html`](templates/brand.html)
-
-**How to read it:** most stores cluster where the bars are tall. Reward thresholds cut that distribution — the “Stores earning each reward” cards answer “how many clear this bar?”; the histogram shows the shape of the whole population.
-
-**Gaps today:** no axis labels, no numeric tick marks, no vertical lines for reward thresholds (Streamlit Altair chart used to draw threshold rules). Improving the chart is optional; sectioning is the priority below.
+Import CSV/Excel overlays have the same fate: session-only.
 
 ---
 
-## Current page layout (problem)
+## Target (P0 only)
 
-[`templates/brand.html`](templates/brand.html) is one long page with controls in the wrong mental model:
+Postgres is the source of truth for **working edits**:
 
-1. **Simulation results** (metrics, reward counts, histogram, store table) — at top
-2. Import / export — floating above the editor
-3. **One big form** mixing:
-   - Month selector + search + bulk points (same control row)
-   - SKU point editor
-   - Reward thresholds
-   - “Update Simulation”
+- Per-brand map of `sku → proposed_points`
+- Per-brand list of `(reward_name, threshold_points)` in display order
 
-**UX issue Rick wants fixed:** buttons and selectors feel attached to the wrong section. Example: the **month selector** changes which order month feeds the **simulation results**, but it sits with the **point editor** tools (search / bulk apply).
+**Shared across users** (no login, last write wins). Rick and his coworker should see the same numbers after either of them saves.
 
----
+**Still from git Excel (do not move in P0):**
+- Which SKUs exist on the page
+- `current_points` column
+- Extra columns (Monster size, Ferrera brand/category)
+- Athena refresh SKU union (`load_all_skus()`)
 
-## Target sectioning (next agent)
-
-Reorganize so each section has one job and only the controls that belong to it.
-
-Suggested structure:
-
-### Section A — Simulation context & results
-**Purpose:** Pick what month to simulate and see outcomes.
-
-**Controls that belong here:**
-- Simulation month selector
-- (Optional) short caption: “Using July 2026 ordering data”
-- Update / refresh results if month change is not auto-submit
-
-**Content:**
-- Total / avg / median / max points
-- Stores earning each reward (count + %)
-- Points distribution histogram
-- Store-level detail
-
-### Section B — SKU points
-**Purpose:** Edit points that drive the simulation.
-
-**Controls that belong here:**
-- Search / filter SKUs
-- Bulk point value + Apply to selected
-- Import proposed points
-- Export SKU CSV
-- SKU table (current + proposed points)
-
-### Section C — Reward thresholds
-**Purpose:** Define reward names and point cutoffs.
-
-**Controls that belong here:**
-- Reward name / points fields
-- Add reward / Remove reward
-
-### Global
-- Brand nav (Coca-Cola / Monster / Ferrera) stays in the top bar
-- Freshness caption (“Order data through …”) stays in header
-
-**Principle:** If a control only changes results for a given month, put it in Section A. If it only edits SKU points, put it in Section B. Avoid one mega-toolbar that mixes month + search + bulk.
+Replacing those workbooks with web-managed catalogs is **P1** in [`backlog.md`](backlog.md). Do not do P1 now.
 
 ---
 
-## Key files for the next agent
+## Suggested data model
 
-| File | Role |
-|------|------|
-| [`templates/brand.html`](templates/brand.html) | Main brand page layout — primary edit surface |
-| [`templates/base.html`](templates/base.html) | Shell, brand nav, freshness |
-| [`static/styles.css`](static/styles.css) | Layout / section styling |
-| [`app.py`](app.py) | Routes, form actions, session proposed points / rewards |
-| [`simulator.py`](simulator.py) | Pure sim helpers + `summarize_results` / histogram |
-| [`data.py`](data.py) | Postgres + Excel loaders |
-| [`start.sh`](start.sh) | Web = uvicorn; cron = `SERVICE_ROLE=refresh` |
+Extend [`SCHEMA_SQL`](data.py) / `init_schema()` (today it only creates `orders` and `refresh_state`):
 
-Simulation already runs on **GET** page load (`brand_page_context` → `run_brand_simulation`). Month change currently GET-submits via JS on the select. After sectioning, keep that behavior (or equivalent) so results stay in sync with the month control in Section A.
+```sql
+CREATE TABLE IF NOT EXISTS brand_proposed_points (
+    brand      text        NOT NULL,
+    sku        text        NOT NULL,
+    points     int         NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (brand, sku)
+);
 
----
+CREATE TABLE IF NOT EXISTS brand_rewards (
+    brand      text        NOT NULL,
+    sort       int         NOT NULL,
+    name       text        NOT NULL,
+    points     int         NOT NULL,
+    PRIMARY KEY (brand, sort)
+);
+```
 
-## Out of scope for this handoff (unless Rick expands)
+Equivalent shape is fine. Keep it boring.
 
-- Changing Athena / Postgres / cron
-- Reintroducing Streamlit
-- Full React rewrite (stack is FastAPI + Jinja2 by choice)
-- Branding overhaul beyond section clarity
+**Empty proposed row for a SKU** → simulation uses Excel `current_points` (`build_points_lookup()` already treats proposed `> 0` as override).
 
----
-
-## Acceptance criteria for the sectioning work
-
-1. Month selector is visually and structurally inside the **results** section, not the SKU editor.
-2. Search, bulk apply, import, export sit with the **SKU point editor**.
-3. Add/remove reward controls sit with **reward thresholds**.
-4. Existing behavior preserved: page-load results, reward store counts, proposed points session, import/export, brand switch.
-5. Mobile-usable: sections stack cleanly; no broken forms after splitting HTML forms if needed (may need multiple forms + hidden fields or small JS to sync month into other posts).
+**No reward rows for a brand** → keep serving `BRAND_DEFAULTS[brand]["rewards"]` until someone adds/removes/edits rewards, then persist the full list.
 
 ---
 
-## Suggested first steps for next agent
+## Critical: merge, do not replace from the HTML form
 
-1. Sketch Section A / B / C in `brand.html` with clear headings.
-2. Move month `<select>` into the results panel; keep auto-refresh on change.
-3. Move search / bulk / import / export into the SKU panel only.
-4. Split or nest forms carefully so POST actions still receive `month`, `sku`, `proposed_points`, and reward fields.
-5. Smoke-test all three brands on Railway after deploy.
+The SKU table can be **filtered by search**. POST `/brands/{brand}/simulate` only includes `sku` / `proposed_points` for **visible rows**. Today `parse_proposed_form()` + `set_proposed()` **replace the entire session map**, so “search then Update Simulation” can wipe proposed points for SKUs not on screen.
+
+When you persist:
+
+- **Proposed points:** treat the form (and bulk apply, and import) as a **patch**. Load existing Postgres map, overlay posted SKUs, write back. SKUs omitted from the form must keep their stored points.
+- **Rewards:** the form posts every reward card (not filtered). Full replace of that brand’s reward rows is OK.
+
+`parse_proposed_form()` currently **drops points ≤ 0**. Keep that: storing `0` should remove the override so Excel current points apply again. Merge must delete that SKU’s row (or store 0 and ignore it in lookup — deleting is cleaner).
+
+---
+
+## Wiring (keep UX)
+
+Swap session get/set in [`app.py`](app.py) (`get_proposed` / `set_proposed` / `get_rewards` / `set_rewards`) to Postgres. Keep **flash** in the session cookie.
+
+Call sites that must write through to Postgres:
+
+| Action | Route |
+|---|---|
+| Update Simulation | POST `/brands/{brand}/simulate` `action=simulate` |
+| Bulk apply | same, `action=bulk_apply` |
+| Add / remove reward | same, `add_reward` / `remove_reward_*` |
+| Import proposed points | POST `/brands/{brand}/import` |
+| Page load / export | GET `/brands/{brand}` and `/export` must **read** Postgres |
+
+No new screens required. Optional one-line caption (“Saved for everyone”) is nice, not required.
+
+Sectioned layout in [`templates/brand.html`](templates/brand.html) stays as-is (month with results; SKU tools with editor; reward controls with thresholds).
+
+---
+
+## Schema init on the **web** service
+
+`init_schema()` runs today only inside [`refresh_orders.py`](refresh_orders.py) (cron). The web process may boot for weeks without a refresh.
+
+**The FastAPI app must create the new tables itself** (startup or first request), using the same `DATABASE_URL` it already uses for `orders`. Do not wait for cron. Do not change `start.sh` web vs `SERVICE_ROLE=refresh` split.
+
+---
+
+## Tests
+
+Existing [`test_app.py`](test_app.py) uses `TestClient` session cookies and mocks `load_orders_or_error` / `load_brand_skus`. After this change, persist must not require a real Railway DB in unit tests.
+
+- Fake/in-memory store behind `get_proposed`/`set_proposed`/`get_rewards`/`set_rewards`, **or** patch the new data-layer functions.
+- Assert: POST simulate → new TestClient (no cookies) → GET still shows saved proposed points and reward names.
+- Assert: search-filtered POST does **not** delete proposed points for SKUs not in the form.
+- Assert: import still merges; add/remove reward still round-trips.
+- Smoke: all three brand keys (`coca-cola`, `monster`, `ferrera`).
+- Run `pytest`. Do not add Athena/Postgres/cron tests unless you touch those paths.
+
+---
+
+## Out of scope
+
+- Replacing git Excel workbooks / unifying loaders (P1)
+- Athena query / store-inclusion rules (P2)
+- Per-brand colors (P3)
+- “Create a new brand” UI (P4)
+- Streamlit
+- Auth / per-user sandboxes (shared last-write-wins is the product)
+- Changing `start.sh` roles or the Athena cron
+
+---
+
+## Acceptance
+
+1. Edit proposed points, click Update Simulation, hard-refresh or open another browser: values still there.
+2. Same for reward names, thresholds, add reward, remove reward.
+3. Import CSV/Excel overlay persists the same way.
+4. Coworker on another machine sees those values (shared Postgres, not a cookie).
+5. Excel still defines the SKU list and current-points column.
+6. Search + save does not wipe hidden SKUs.
+7. `pytest` green. Brand pages still sectioned. Railway web redeploy picks up schema + code; cron unchanged.
+
+---
+
+## Suggested first steps
+
+1. Add tables to `SCHEMA_SQL` and load/save helpers in [`data.py`](data.py).
+2. Ensure `init_schema()` (or equivalent) runs from the web app on startup.
+3. Point `get_proposed` / `set_proposed` / `get_rewards` / `set_rewards` at Postgres; **merge** proposed-point writes.
+4. Leave flash on the session cookie.
+5. Fix/extend [`test_app.py`](test_app.py) with a fake store and a no-cookie round-trip.
+6. Smoke-test all three brands locally if `DATABASE_URL` is available; otherwise tests + a Railway web redeploy after merge.
 
 ---
 
 ## Deploy reminder
 
-After UI changes: push to `main` (or PR), then **redeploy the Railway web service**. Cron/refresh service unchanged unless `start.sh` / env vars change.
+After merge: **redeploy the Railway web service** (it has `DATABASE_URL`). Cron/refresh service unchanged unless you edit `start.sh` / env vars (you should not). First web boot must `CREATE TABLE IF NOT EXISTS` the new tables.
+
+---
+
+## Paste-ready agent prompt
+
+```
+Read HANDOFF.md and implement P0 only (persist proposed SKU points, reward names, and thresholds in Railway Postgres).
+
+Baseline: main. Do not do backlog P1–P4. Do not change Athena/Postgres orders pipeline, start.sh web vs refresh split, or reintroduce Streamlit. Do not replace the git Excel workbooks.
+
+Today get_proposed/set_proposed and get_rewards/set_rewards in app.py use a 12-hour session cookie. Move working edits to shared Postgres (new tables via SCHEMA_SQL / init_schema). Excel still owns SKU lists and current_points. Empty proposed → Excel current; empty rewards → BRAND_DEFAULTS.
+
+MERGE proposed-point writes: the SKU table can be search-filtered, so a simulate POST is not a full snapshot. Overlay posted SKUs onto the existing map; omitted SKUs keep stored points. Points ≤ 0 remove the override. Rewards may full-replace. Flash can stay on the session.
+
+Web app must create the new tables on startup (init_schema currently runs only in refresh_orders.py). Keep UX/sectioning. pytest must pass without real Railway DB (fake store or mocks), including a no-cookie round-trip and a search-filtered POST that does not wipe other SKUs. Smoke all three brands.
+
+Start from main, implement, run pytest, commit/push, open a PR.
+```
