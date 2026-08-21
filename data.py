@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 from datetime import date, datetime
 from pathlib import Path
@@ -52,7 +53,24 @@ CREATE TABLE IF NOT EXISTS brand_rewards (
     points     int         NOT NULL,
     PRIMARY KEY (brand, sort)
 );
+
+CREATE TABLE IF NOT EXISTS brand_skus (
+    brand           text        NOT NULL,
+    sku             text        NOT NULL,
+    product_title   text        NOT NULL DEFAULT '',
+    current_points  int         NOT NULL DEFAULT 0,
+    size            text,
+    product_brand   text,
+    category        text,
+    sort            int         NOT NULL DEFAULT 0,
+    updated_at      timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (brand, sku)
+);
 """
+
+CATALOG_BRANDS = ("coca-cola", "monster", "ferrera")
+CATALOG_EXTRA_COLS = ("size", "brand", "category")
+CATALOG_CORE_COLS = ("sku", "product_title", "current_points")
 
 
 # ---------------------------------------------------------------------------
@@ -184,19 +202,180 @@ def load_ferrera_skus(excel_path=FERRERA_EXCEL) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-def load_all_skus(
-    cocacola_path=COCACOLA_EXCEL,
-    monster_path=MONSTER_EXCEL,
-    ferrera_path=FERRERA_EXCEL,
-) -> list[str]:
-    skus = set()
-    for df in (
-        load_cocacola_skus(cocacola_path),
-        load_monster_skus(monster_path),
-        load_ferrera_skus(ferrera_path),
-    ):
-        skus.update(df["sku"].dropna().astype(str).tolist())
-    return sorted(skus)
+def excel_skus_for_brand(brand: str) -> pd.DataFrame:
+    if brand == "coca-cola":
+        return load_cocacola_skus()
+    if brand == "monster":
+        return load_monster_skus()
+    if brand == "ferrera":
+        return load_ferrera_skus()
+    raise KeyError(brand)
+
+
+# ---------------------------------------------------------------------------
+# Catalog records (canonical SKU list)
+# ---------------------------------------------------------------------------
+
+def normalize_catalog_row(row: dict) -> dict:
+    sku = str(row.get("sku") or "").strip()
+    title_raw = row.get("product_title")
+    try:
+        title_missing = title_raw is None or pd.isna(title_raw)
+    except (TypeError, ValueError):
+        title_missing = title_raw is None
+    title = "" if title_missing else str(title_raw).strip()
+    if title.lower() == "nan":
+        title = ""
+    rec = {
+        "sku": sku,
+        "product_title": title,
+        "current_points": _safe_int(row.get("current_points", 0)),
+    }
+    for col in CATALOG_EXTRA_COLS:
+        val = row.get(col)
+        if val is None:
+            continue
+        try:
+            if pd.isna(val):
+                continue
+        except (TypeError, ValueError):
+            pass
+        text = str(val).strip()
+        if text and text.lower() != "nan":
+            rec[col] = text
+    return rec
+
+
+def records_from_sku_frame(df: pd.DataFrame) -> list[dict]:
+    if df is None or df.empty:
+        return []
+    records = []
+    seen = {}
+    for _, row in df.iterrows():
+        rec = normalize_catalog_row(row.to_dict())
+        if not rec["sku"] or rec["sku"].lower() == "nan":
+            continue
+        seen[rec["sku"]] = rec
+    for rec in seen.values():
+        records.append(rec)
+    return records
+
+
+def catalog_frame(records: list[dict]) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame(columns=list(CATALOG_CORE_COLS))
+    normalized = [normalize_catalog_row(r) for r in records if str(r.get("sku") or "").strip()]
+    df = pd.DataFrame.from_records(normalized)
+    df["sku"] = df["sku"].astype(str)
+    df["product_title"] = df["product_title"].fillna("").astype(str)
+    df["current_points"] = df["current_points"].map(_safe_int)
+    return df
+
+
+def overlay_catalog(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    """Merge incoming SKUs onto existing. Omitted SKUs are kept; incoming order for new SKUs."""
+    existing_n = [normalize_catalog_row(r) for r in existing if str(r.get("sku") or "").strip()]
+    incoming_n = [normalize_catalog_row(r) for r in incoming if str(r.get("sku") or "").strip()]
+    incoming_by = {r["sku"]: r for r in incoming_n}
+    out = []
+    seen = set()
+    for row in existing_n:
+        sku = row["sku"]
+        out.append(incoming_by.get(sku, row))
+        seen.add(sku)
+    for row in incoming_n:
+        if row["sku"] not in seen:
+            out.append(row)
+            seen.add(row["sku"])
+    return out
+
+
+def diff_catalog(existing: list[dict], incoming: list[dict]) -> dict:
+    existing_n = [normalize_catalog_row(r) for r in existing if str(r.get("sku") or "").strip()]
+    incoming_n = [normalize_catalog_row(r) for r in incoming if str(r.get("sku") or "").strip()]
+    existing_by = {r["sku"]: r for r in existing_n}
+    incoming_by = {r["sku"]: r for r in incoming_n}
+    added = [incoming_by[s] for s in incoming_by if s not in existing_by]
+    removed = [existing_by[s] for s in existing_by if s not in incoming_by]
+    updated = []
+    for sku, new in incoming_by.items():
+        old = existing_by.get(sku)
+        if old is None:
+            continue
+        if old != new:
+            updated.append({"sku": sku, "before": old, "after": new})
+    return {
+        "added": added,
+        "removed": removed,
+        "updated": updated,
+        "unchanged": len(incoming_by) - len(added) - len(updated),
+        "incoming_count": len(incoming_n),
+        "existing_count": len(existing_n),
+    }
+
+
+def parse_catalog_file(file_bytes: bytes, filename: str) -> tuple[list[dict] | None, str | None]:
+    """Parse a canonical catalog CSV/Excel (sku, product_title, current_points; extras optional)."""
+    name = (filename or "").lower()
+    buffer = io.BytesIO(file_bytes)
+    try:
+        if name.endswith(".csv"):
+            df = pd.read_csv(buffer)
+        elif name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(buffer)
+        else:
+            return None, "Unsupported file type. Please upload a CSV or Excel file."
+    except Exception as exc:
+        return None, f"Could not read file: {exc}"
+
+    if df is None or df.empty:
+        return None, "No SKU rows found in the uploaded file."
+
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
+    aliases = {
+        "title": "product_title",
+        "product": "product_title",
+        "points": "current_points",
+        "current": "current_points",
+    }
+    df = df.rename(columns={k: v for k, v in aliases.items() if k in df.columns})
+    if "sku" not in df.columns or "product_title" not in df.columns:
+        return None, (
+            "File must contain 'sku' and 'product_title' columns "
+            "(optional: current_points, size, brand, category). "
+            f"Found: {', '.join(df.columns)}"
+        )
+    if "current_points" not in df.columns:
+        df["current_points"] = 0
+    records = records_from_sku_frame(df)
+    if not records:
+        return None, "No SKU rows found in the uploaded file."
+    return records, None
+
+
+def catalog_download_frame(records: list[dict]) -> pd.DataFrame:
+    df = catalog_frame(records)
+    cols = list(CATALOG_CORE_COLS)
+    for col in CATALOG_EXTRA_COLS:
+        if col in df.columns and df[col].notna().any():
+            nonempty = df[col].astype(str).str.strip()
+            if (nonempty != "").any() and (nonempty.str.lower() != "nan").any():
+                cols.append(col)
+    cols = [c for c in cols if c in df.columns]
+    return df[cols]
+
+
+def load_all_skus(conn=None) -> list[str]:
+    """SKU union for Athena refresh: Postgres catalogs, seeded from Excel if empty."""
+    conn, close = _borrow_connection(conn)
+    try:
+        seed_brand_catalogs(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT sku FROM brand_skus ORDER BY sku")
+            return [str(row[0]) for row in cur.fetchall()]
+    finally:
+        if close:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +404,12 @@ def empty_orders_frame() -> pd.DataFrame:
 
 
 def fetch_order_data(sku_list, start: date, end: date, connect_fn=None) -> pd.DataFrame:
-    """Query Athena for store/SKU quantities in [start, end)."""
+    """Query Athena for store/SKU quantities in [start, end).
+
+    Inclusion: any store that ordered a catalog SKU in the window, with no
+    min-quantity HAVING filter, cancelled-order predicate, or store-status
+    filter. Quantity is SUM(li.initial_quantity), not net of returns.
+    """
     if not sku_list:
         return empty_orders_frame()
 
@@ -334,6 +518,7 @@ def ensure_schema() -> bool:
     conn = get_connection()
     try:
         init_schema(conn)
+        seed_brand_catalogs(conn)
         return True
     finally:
         conn.close()
@@ -350,7 +535,7 @@ def overlay_proposed_points(existing: dict[str, int], patch: dict[str, int]) -> 
     """Merge a proposed-points patch onto an existing map.
 
     Keys omitted from `patch` are kept. Values ≤ 0 remove that SKU's override
-    so Excel current_points apply again.
+    so catalog current_points apply again.
     """
     out = {str(k): int(v) for k, v in existing.items() if int(v) > 0}
     for sku, pts in patch.items():
@@ -453,6 +638,130 @@ def save_brand_rewards(brand: str, rewards: list[tuple[str, int]], conn=None) ->
                     page_size=100,
                 )
         conn.commit()
+    finally:
+        if close:
+            conn.close()
+
+
+def count_catalog_skus(brand: str, conn=None) -> int:
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM brand_skus WHERE brand = %s", (brand,))
+            return int(cur.fetchone()[0])
+    finally:
+        if close:
+            conn.close()
+
+
+def load_catalog_skus(brand: str, conn=None) -> list[dict]:
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT sku, product_title, current_points, size, product_brand, category "
+                "FROM brand_skus WHERE brand = %s ORDER BY sort, sku",
+                (brand,),
+            )
+            rows = cur.fetchall()
+        records = []
+        for sku, title, points, size, product_brand, category in rows:
+            rec = {
+                "sku": str(sku),
+                "product_title": "" if title is None else str(title),
+                "current_points": _safe_int(points),
+            }
+            if size:
+                rec["size"] = str(size)
+            if product_brand:
+                rec["brand"] = str(product_brand)
+            if category:
+                rec["category"] = str(category)
+            records.append(rec)
+        return records
+    finally:
+        if close:
+            conn.close()
+
+
+def replace_catalog_skus(brand: str, records: list[dict], conn=None) -> int:
+    from psycopg2.extras import execute_values
+
+    conn, close = _borrow_connection(conn)
+    try:
+        normalized = [
+            normalize_catalog_row(r)
+            for r in records
+            if str(r.get("sku") or "").strip()
+        ]
+        keep = [r["sku"] for r in normalized]
+        rows = []
+        for idx, rec in enumerate(normalized):
+            rows.append((
+                brand,
+                rec["sku"],
+                rec.get("product_title") or "",
+                _safe_int(rec.get("current_points")),
+                rec.get("size"),
+                rec.get("brand"),
+                rec.get("category"),
+                idx,
+            ))
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM brand_skus WHERE brand = %s", (brand,))
+            if rows:
+                execute_values(
+                    cur,
+                    "INSERT INTO brand_skus "
+                    "(brand, sku, product_title, current_points, size, product_brand, category, sort) "
+                    "VALUES %s",
+                    rows,
+                    page_size=500,
+                )
+            if keep:
+                cur.execute(
+                    "DELETE FROM brand_proposed_points "
+                    "WHERE brand = %s AND NOT (sku = ANY(%s))",
+                    (brand, keep),
+                )
+            else:
+                cur.execute(
+                    "DELETE FROM brand_proposed_points WHERE brand = %s",
+                    (brand,),
+                )
+        conn.commit()
+        return len(normalized)
+    finally:
+        if close:
+            conn.close()
+
+
+def merge_catalog_skus(brand: str, records: list[dict], conn=None) -> list[dict]:
+    conn, close = _borrow_connection(conn)
+    try:
+        existing = load_catalog_skus(brand, conn=conn)
+        merged = overlay_catalog(existing, records)
+        replace_catalog_skus(brand, merged, conn=conn)
+        return merged
+    finally:
+        if close:
+            conn.close()
+
+
+def seed_brand_catalogs(conn=None) -> dict[str, int]:
+    """Copy git Excel workbooks into Postgres for brands with an empty catalog."""
+    conn, close = _borrow_connection(conn)
+    try:
+        seeded = {}
+        for brand in CATALOG_BRANDS:
+            if count_catalog_skus(brand, conn=conn) > 0:
+                continue
+            records = records_from_sku_frame(excel_skus_for_brand(brand))
+            if not records:
+                continue
+            replace_catalog_skus(brand, records, conn=conn)
+            seeded[brand] = len(records)
+        return seeded
     finally:
         if close:
             conn.close()

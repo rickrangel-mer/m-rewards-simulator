@@ -1,12 +1,13 @@
 from io import BytesIO
 from unittest.mock import patch
+import json
 
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
 import app as webapp
-from data import overlay_proposed_points
+from data import overlay_catalog, overlay_proposed_points
 from simulator import BRAND_DEFAULTS
 
 
@@ -36,11 +37,12 @@ def _two_skus():
 
 
 class FakeStore:
-    """In-memory stand-in for Railway Postgres proposed-points / rewards tables."""
+    """In-memory stand-in for Railway Postgres proposed-points / rewards / catalog tables."""
 
     def __init__(self):
         self.proposed: dict[str, dict[str, int]] = {}
         self.rewards: dict[str, list[tuple[str, int]]] = {}
+        self.catalogs: dict[str, list[dict]] = {}
 
     def load_proposed_points(self, brand: str, conn=None) -> dict[str, int]:
         return dict(self.proposed.get(brand, {}))
@@ -59,6 +61,22 @@ class FakeStore:
     def save_brand_rewards(self, brand: str, rewards: list[tuple[str, int]], conn=None) -> None:
         self.rewards[brand] = [(str(n), int(p)) for n, p in rewards]
 
+    def load_catalog_skus(self, brand: str, conn=None) -> list[dict]:
+        return [dict(r) for r in self.catalogs.get(brand, [])]
+
+    def replace_catalog_skus(self, brand: str, records: list[dict], conn=None) -> int:
+        normalized = overlay_catalog([], records)
+        self.catalogs[brand] = normalized
+        keep = {r["sku"] for r in normalized}
+        proposed = self.proposed.get(brand, {})
+        self.proposed[brand] = {sku: pts for sku, pts in proposed.items() if sku in keep}
+        return len(normalized)
+
+    def merge_catalog_skus(self, brand: str, records: list[dict], conn=None) -> list[dict]:
+        merged = overlay_catalog(self.catalogs.get(brand, []), records)
+        self.replace_catalog_skus(brand, merged)
+        return [dict(r) for r in merged]
+
 
 @pytest.fixture
 def persist_store():
@@ -70,7 +88,10 @@ def _patch_persist(persist_store):
     with patch.object(webapp, "load_proposed_points", persist_store.load_proposed_points), \
          patch.object(webapp, "merge_proposed_points", persist_store.merge_proposed_points), \
          patch.object(webapp, "load_brand_rewards", persist_store.load_brand_rewards), \
-         patch.object(webapp, "save_brand_rewards", persist_store.save_brand_rewards):
+         patch.object(webapp, "save_brand_rewards", persist_store.save_brand_rewards), \
+         patch.object(webapp, "load_catalog_skus", persist_store.load_catalog_skus), \
+         patch.object(webapp, "replace_catalog_skus", persist_store.replace_catalog_skus), \
+         patch.object(webapp, "merge_catalog_skus", persist_store.merge_catalog_skus):
         yield persist_store
 
 
@@ -134,6 +155,8 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert 'method="get"' in results
     assert "Simulation month" in results
     assert "Total Stores" in results
+    assert "stores that ordered this brand this month" in results
+    assert "Chart clips the top 1%" in results
     assert "Stores earning each reward" in results
     assert "Points Distribution" in results
     assert "Store-level detail" in results
@@ -141,12 +164,17 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Bulk point value" not in results
     assert "Import proposed points" not in results
     assert "Add Reward" not in results
+    assert "Upload catalog" not in results
+    assert "Download catalog Excel" not in results
 
     assert "Search SKUs" in sku
     assert "Bulk point value" in sku
     assert "Apply to selected" in sku
     assert "Import proposed points" in sku
     assert "Export SKU CSV" in sku
+    assert "Upload catalog" in sku
+    assert "Preview catalog" in sku
+    assert "Download catalog Excel" in sku
     assert "SKU-A" in sku
     assert "Saved for everyone" in sku
     assert "Simulation month" not in sku
@@ -158,6 +186,7 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Search SKUs" not in rewards
     assert "Simulation month" not in rewards
     assert "Import proposed points" not in rewards
+    assert "Upload catalog" not in rewards
 
 
 def test_all_brands_render_sectioned_pages():
@@ -178,6 +207,10 @@ def test_all_brands_render_sectioned_pages():
             assert 'id="reward-thresholds"' in html
             assert 'id="month-form"' in html
             assert "Update Simulation" in html
+            assert "Download catalog Excel" in html
+            assert 'id="catalog-upload"' in html
+            assert f'data-brand="{brand}"' in html
+            assert "stores that ordered this brand this month" in html
 
 
 def test_month_query_keeps_results_in_sync():
@@ -484,3 +517,174 @@ def test_web_startup_calls_ensure_schema():
         with TestClient(webapp.app) as client:
             assert client.get("/health").json() == {"ok": True}
         ensure.assert_called()
+
+
+def test_download_catalog_excel(persist_store):
+    persist_store.catalogs["coca-cola"] = [
+        {"sku": "SKU-A", "product_title": "Test Product", "current_points": 50, "size": "12oz"},
+    ]
+    client = TestClient(webapp.app)
+    response = client.get("/brands/coca-cola/catalog.xlsx")
+    assert response.status_code == 200
+    assert "spreadsheetml" in response.headers["content-type"]
+    df = pd.read_excel(BytesIO(response.content))
+    assert list(df["sku"]) == ["SKU-A"]
+    assert list(df["product_title"]) == ["Test Product"]
+    assert int(df["current_points"].iloc[0]) == 50
+    assert "size" in df.columns
+
+
+def test_download_catalog_all_brands(persist_store):
+    client = TestClient(webapp.app)
+    for brand in BRAND_DEFAULTS:
+        persist_store.catalogs[brand] = [
+            {"sku": "SKU-A", "product_title": f"{brand} product", "current_points": 10},
+        ]
+        response = client.get(f"/brands/{brand}/catalog.xlsx")
+        assert response.status_code == 200, brand
+        df = pd.read_excel(BytesIO(response.content))
+        assert list(df["sku"]) == ["SKU-A"]
+
+
+def test_catalog_preview_shows_add_update_remove(persist_store):
+    persist_store.catalogs["coca-cola"] = [
+        {"sku": "SKU-A", "product_title": "Old Name", "current_points": 50},
+        {"sku": "SKU-B", "product_title": "Keep Me", "current_points": 75},
+    ]
+    csv = b"sku,product_title,current_points\nSKU-A,New Name,80\nSKU-C,Added,10\n"
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/brands/coca-cola/catalog",
+        data={"month": "2026-07"},
+        files={"file": ("catalog.csv", BytesIO(csv), "text/csv")},
+    )
+    assert response.status_code == 200
+    html = response.text
+    assert "Preview of" in html
+    assert "SKU-C" in html
+    assert "Added" in html
+    assert "Keep Me" in html
+    assert "Old Name" in html
+    assert "New Name" in html
+    assert "Merge into catalog" in html
+    assert "Replace catalog" in html
+    assert 'id="catalog-confirm"' in html
+    assert 'data-brand="coca-cola"' in html
+
+
+def test_catalog_merge_keeps_omitted_skus(persist_store):
+    persist_store.catalogs["coca-cola"] = [
+        {"sku": "SKU-A", "product_title": "A", "current_points": 50},
+        {"sku": "SKU-B", "product_title": "B", "current_points": 75},
+    ]
+    persist_store.proposed["coca-cola"] = {"SKU-A": 9, "SKU-B": 8}
+    incoming = [
+        {"sku": "SKU-A", "product_title": "A+", "current_points": 60},
+        {"sku": "SKU-C", "product_title": "C", "current_points": 5},
+    ]
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/brands/coca-cola/catalog/confirm",
+        data={
+            "month": "2026-07",
+            "action": "merge",
+            "payload": json.dumps(incoming),
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    skus = {r["sku"]: r for r in persist_store.catalogs["coca-cola"]}
+    assert set(skus) == {"SKU-A", "SKU-B", "SKU-C"}
+    assert skus["SKU-A"]["product_title"] == "A+"
+    assert skus["SKU-A"]["current_points"] == 60
+    assert skus["SKU-B"]["current_points"] == 75
+    assert persist_store.proposed["coca-cola"] == {"SKU-A": 9, "SKU-B": 8}
+
+
+def test_catalog_replace_removes_omitted_skus(persist_store):
+    persist_store.catalogs["coca-cola"] = [
+        {"sku": "SKU-A", "product_title": "A", "current_points": 50},
+        {"sku": "SKU-B", "product_title": "B", "current_points": 75},
+    ]
+    persist_store.proposed["coca-cola"] = {"SKU-A": 9, "SKU-B": 8}
+    incoming = [
+        {"sku": "SKU-A", "product_title": "A+", "current_points": 60},
+        {"sku": "SKU-C", "product_title": "C", "current_points": 5},
+    ]
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/brands/coca-cola/catalog/confirm",
+        data={
+            "month": "2026-07",
+            "action": "replace",
+            "payload": json.dumps(incoming),
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    skus = {r["sku"]: r for r in persist_store.catalogs["coca-cola"]}
+    assert set(skus) == {"SKU-A", "SKU-C"}
+    assert persist_store.proposed["coca-cola"] == {"SKU-A": 9}
+
+
+def test_catalog_replace_round_trip_without_cookies(persist_store):
+    persist_store.catalogs["coca-cola"] = [
+        {"sku": "SKU-A", "product_title": "A", "current_points": 50},
+        {"sku": "SKU-B", "product_title": "B", "current_points": 75},
+    ]
+    incoming = [
+        {"sku": "SKU-A", "product_title": "Zed", "current_points": 12},
+        {"sku": "SKU-Z", "product_title": "New SKU", "current_points": 7},
+    ]
+    writer = TestClient(webapp.app)
+    posted = writer.post(
+        "/brands/coca-cola/catalog/confirm",
+        data={"month": "2026-07", "action": "replace", "payload": json.dumps(incoming)},
+        follow_redirects=False,
+    )
+    assert posted.status_code == 303
+
+    orders_patch, _unused = _mocked_client()
+    with orders_patch, patch.object(
+        webapp,
+        "load_brand_skus",
+        side_effect=lambda brand: webapp.catalog_frame(persist_store.catalogs.get(brand, [])),
+    ):
+        page = TestClient(webapp.app).get("/brands/coca-cola")
+    assert page.status_code == 200
+    assert b"SKU-Z" in page.content
+    assert b"New SKU" in page.content
+    assert b"Zed" in page.content
+    assert b"SKU-B" not in page.content
+
+
+def test_catalog_upload_rejects_points_only_file(persist_store):
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/brands/coca-cola/catalog",
+        data={"month": "2026-07"},
+        files={"file": ("points.csv", BytesIO(b"sku,points\nSKU-A,400\n"), "text/csv")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        follow = client.get(response.headers["location"])
+    assert b"product_title" in follow.content
+    assert persist_store.catalogs.get("coca-cola") in (None, [])
+
+
+def test_brand_theme_css_uses_variables_and_palettes():
+    client = TestClient(webapp.app)
+    css = client.get("/static/styles.css").text
+    assert 'body[data-brand="coca-cola"]' in css
+    assert "#c8102e" in css
+    assert 'body[data-brand="monster"]' in css
+    assert "#6abf4b" in css
+    assert 'body[data-brand="ferrera"]' in css
+    assert "#8a5a2b" in css
+    assert "#3d8f7f" not in css
+    assert "rgba(15, 106, 90" not in css
+    assert ".bar-fill" in css
+    assert "background: var(--accent)" in css
+

@@ -11,6 +11,21 @@
   --font: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 
+body[data-brand="coca-cola"] {
+  --accent: #c8102e;
+  --accent-soft: #fde8eb;
+}
+
+body[data-brand="monster"] {
+  --accent: #6abf4b;
+  --accent-soft: #e8f6e1;
+}
+
+body[data-brand="ferrera"] {
+  --accent: #8a5a2b;
+  --accent-soft: #f4ebe3;
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -18,7 +33,7 @@ body {
   font-family: var(--font);
   color: var(--ink);
   background:
-    radial-gradient(circle at top left, rgba(15, 106, 90, 0.08), transparent 40%),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 12%, transparent), transparent 40%),
     linear-gradient(180deg, #eef2f5 0%, var(--bg) 40%);
   min-height: 100vh;
 }
@@ -76,7 +91,7 @@ a:hover { text-decoration: underline; }
 .brand-nav a:hover {
   background: var(--accent-soft);
   color: var(--accent);
-  border-color: #b7ddd3;
+  border-color: color-mix(in srgb, var(--accent) 35%, white);
   text-decoration: none;
 }
 
@@ -177,7 +192,7 @@ button[value="simulate"] {
 
 .button.secondary, button.secondary {
   background: var(--accent-soft);
-  border-color: #b7ddd3;
+  border-color: color-mix(in srgb, var(--accent) 35%, white);
   color: var(--accent);
 }
 
@@ -253,7 +268,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .reward-metrics > div,
 .reward-result {
   background: var(--accent-soft);
-  border-color: #b7ddd3;
+  border-color: color-mix(in srgb, var(--accent) 35%, white);
 }
 
 .reward-count {
@@ -282,14 +297,14 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .bar-fill {
   width: 100%;
-  background: #3d8f7f;
+  background: var(--accent);
   border-radius: 2px 2px 0 0;
   min-height: 1px;
 }
 
 .flash {
   background: var(--accent-soft);
-  border: 1px solid #b7ddd3;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, white);
   color: var(--accent);
   padding: 0.75rem 1rem;
   border-radius: 8px;
@@ -306,6 +321,12 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .import-row { margin-bottom: 0.85rem; }
 .actions { margin: 1rem 0 2rem; }
+
+#catalog-upload {
+  padding-top: 0.15rem;
+  border-top: 1px dashed var(--line);
+  padding-top: 0.85rem;
+}
 
 details summary {
   cursor: pointer;
