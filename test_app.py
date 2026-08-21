@@ -2,9 +2,12 @@ from io import BytesIO
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 
 import app as webapp
+from data import overlay_proposed_points
+from simulator import BRAND_DEFAULTS
 
 
 def _sample_orders():
@@ -24,14 +27,61 @@ def _sample_skus():
     })
 
 
-def _mocked_client():
+def _two_skus():
+    return pd.DataFrame({
+        "sku": ["SKU-A", "SKU-B"],
+        "product_title": ["Product A", "Product B"],
+        "current_points": [50, 75],
+    })
+
+
+class FakeStore:
+    """In-memory stand-in for Railway Postgres proposed-points / rewards tables."""
+
+    def __init__(self):
+        self.proposed: dict[str, dict[str, int]] = {}
+        self.rewards: dict[str, list[tuple[str, int]]] = {}
+
+    def load_proposed_points(self, brand: str, conn=None) -> dict[str, int]:
+        return dict(self.proposed.get(brand, {}))
+
+    def merge_proposed_points(self, brand: str, patch: dict[str, int], conn=None) -> dict[str, int]:
+        merged = overlay_proposed_points(self.proposed.get(brand, {}), patch)
+        self.proposed[brand] = merged
+        return dict(merged)
+
+    def load_brand_rewards(self, brand: str, conn=None) -> list[tuple[str, int]]:
+        stored = self.rewards.get(brand)
+        if not stored:
+            return []
+        return list(stored)
+
+    def save_brand_rewards(self, brand: str, rewards: list[tuple[str, int]], conn=None) -> None:
+        self.rewards[brand] = [(str(n), int(p)) for n, p in rewards]
+
+
+@pytest.fixture
+def persist_store():
+    return FakeStore()
+
+
+@pytest.fixture(autouse=True)
+def _patch_persist(persist_store):
+    with patch.object(webapp, "load_proposed_points", persist_store.load_proposed_points), \
+         patch.object(webapp, "merge_proposed_points", persist_store.merge_proposed_points), \
+         patch.object(webapp, "load_brand_rewards", persist_store.load_brand_rewards), \
+         patch.object(webapp, "save_brand_rewards", persist_store.save_brand_rewards):
+        yield persist_store
+
+
+def _mocked_client(skus=None):
     return (
         patch.object(
             webapp,
             "load_orders_or_error",
             return_value=(_sample_orders(), {"last_refreshed_month": "2026-07"}, None),
         ),
-        patch.object(webapp, "load_brand_skus", return_value=_sample_skus()),
+        patch.object(webapp, "load_brand_skus", return_value=skus if skus is not None else _sample_skus()),
     )
 
 
@@ -98,10 +148,12 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Import proposed points" in sku
     assert "Export SKU CSV" in sku
     assert "SKU-A" in sku
+    assert "Saved for everyone" in sku
     assert "Simulation month" not in sku
     assert "Add Reward" not in sku
 
     assert "Add Reward" in rewards
+    assert "Saved for everyone" in rewards
     assert "Remove" in rewards
     assert "Search SKUs" not in rewards
     assert "Simulation month" not in rewards
@@ -246,3 +298,189 @@ def test_import_points_uses_hidden_month():
         page = client.get(response.headers["location"])
     assert b"Imported points for 1 SKUs." in page.content
     assert b'value="400"' in page.content
+
+
+def test_simulate_round_trips_without_cookies(persist_store):
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        writer = TestClient(webapp.app)
+        posted = writer.post(
+            "/brands/coca-cola/simulate",
+            data={
+                "month": "2026-07",
+                "q": "",
+                "bulk_value": "100",
+                "action": "simulate",
+                "sku": "SKU-A",
+                "proposed_points": "333",
+                "reward_name": "Team Cooler",
+                "reward_points": "1234",
+            },
+        )
+        assert posted.status_code == 200
+
+        reader = TestClient(webapp.app)
+        page = reader.get("/brands/coca-cola")
+
+    assert persist_store.proposed["coca-cola"]["SKU-A"] == 333
+    assert persist_store.rewards["coca-cola"] == [("Team Cooler", 1234)]
+    assert b'value="333"' in page.content
+    assert b"Team Cooler" in page.content
+    assert b'value="1234"' in page.content
+
+
+def test_search_filtered_post_does_not_wipe_other_skus(persist_store):
+    persist_store.proposed["coca-cola"] = {"SKU-A": 100, "SKU-B": 200}
+    orders_patch, skus_patch = _mocked_client(skus=_two_skus())
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/coca-cola/simulate",
+            data={
+                "month": "2026-07",
+                "q": "SKU-A",
+                "bulk_value": "100",
+                "action": "simulate",
+                "sku": "SKU-A",
+                "proposed_points": "150",
+                "reward_name": "Reward 1",
+                "reward_points": "5000",
+            },
+        )
+        assert response.status_code == 200
+        full = client.get("/brands/coca-cola")
+
+    assert persist_store.proposed["coca-cola"] == {"SKU-A": 150, "SKU-B": 200}
+    assert b'value="150"' in full.content
+    assert b'value="200"' in full.content
+
+
+def test_zero_proposed_points_removes_override(persist_store):
+    persist_store.proposed["coca-cola"] = {"SKU-A": 100, "SKU-B": 200}
+    orders_patch, skus_patch = _mocked_client(skus=_two_skus())
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        client.post(
+            "/brands/coca-cola/simulate",
+            data={
+                "month": "2026-07",
+                "action": "simulate",
+                "sku": "SKU-A",
+                "proposed_points": "0",
+                "reward_name": "Reward 1",
+                "reward_points": "5000",
+            },
+        )
+    assert persist_store.proposed["coca-cola"] == {"SKU-B": 200}
+
+
+def test_import_merges_onto_existing_proposed_points(persist_store):
+    persist_store.proposed["coca-cola"] = {"SKU-B": 200}
+    orders_patch, skus_patch = _mocked_client(skus=_two_skus())
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/coca-cola/import",
+            data={"month": "2026-07"},
+            files={"file": ("points.csv", BytesIO(b"sku,points\nSKU-A,400\n"), "text/csv")},
+            follow_redirects=False,
+        )
+        page = client.get(response.headers["location"])
+    assert persist_store.proposed["coca-cola"] == {"SKU-A": 400, "SKU-B": 200}
+    assert b'value="400"' in page.content
+    assert b'value="200"' in page.content
+
+
+def test_add_and_remove_reward_round_trips_without_cookies(persist_store):
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        writer = TestClient(webapp.app)
+        added = writer.post(
+            "/brands/coca-cola/simulate",
+            data={
+                "month": "2026-07",
+                "action": "add_reward",
+                "sku": "SKU-A",
+                "proposed_points": "50",
+                "reward_name": "Existing",
+                "reward_points": "5000",
+                "new_reward_name": "Bonus",
+                "new_reward_points": "8000",
+            },
+            follow_redirects=False,
+        )
+        assert added.status_code == 303
+
+        reader = TestClient(webapp.app)
+        page = reader.get("/brands/coca-cola")
+        assert b"Bonus" in page.content
+        assert persist_store.rewards["coca-cola"] == [("Existing", 5000), ("Bonus", 8000)]
+
+        writer.post(
+            "/brands/coca-cola/simulate",
+            data={
+                "month": "2026-07",
+                "action": "remove_reward_1",
+                "sku": "SKU-A",
+                "proposed_points": "50",
+                "reward_name": ["Existing", "Bonus"],
+                "reward_points": ["5000", "8000"],
+            },
+            follow_redirects=False,
+        )
+        page = reader.get("/brands/coca-cola")
+    assert b"Bonus" not in page.content
+    assert b"Existing" in page.content
+    assert persist_store.rewards["coca-cola"] == [("Existing", 5000)]
+
+
+def test_persist_round_trip_all_brands(persist_store):
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        writer = TestClient(webapp.app)
+        for brand in BRAND_DEFAULTS:
+            posted = writer.post(
+                f"/brands/{brand}/simulate",
+                data={
+                    "month": "2026-07",
+                    "action": "simulate",
+                    "sku": "SKU-A",
+                    "proposed_points": "222",
+                    "reward_name": f"{brand} shared reward",
+                    "reward_points": "7777",
+                },
+            )
+            assert posted.status_code == 200, brand
+
+        reader = TestClient(webapp.app)
+        for brand, meta in BRAND_DEFAULTS.items():
+            page = reader.get(f"/brands/{brand}")
+            assert page.status_code == 200, brand
+            html = page.text
+            assert meta["label"] in html
+            assert 'id="simulation-results"' in html
+            assert 'id="sku-points"' in html
+            assert 'id="reward-thresholds"' in html
+            assert f"{brand} shared reward" in html
+            assert 'value="222"' in html
+            assert 'value="7777"' in html
+            assert persist_store.proposed[brand]["SKU-A"] == 222
+            assert persist_store.rewards[brand] == [(f"{brand} shared reward", 7777)]
+
+
+def test_empty_store_serves_brand_defaults(persist_store):
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        page = client.get("/brands/coca-cola")
+    assert persist_store.rewards == {}
+    assert persist_store.proposed == {}
+    assert b"8 Dollar Rebate" in page.content
+    assert b'value="5000"' in page.content
+
+
+def test_web_startup_calls_ensure_schema():
+    with patch.object(webapp, "ensure_schema", return_value=False) as ensure:
+        with TestClient(webapp.app) as client:
+            assert client.get("/health").json() == {"ok": True}
+        ensure.assert_called()

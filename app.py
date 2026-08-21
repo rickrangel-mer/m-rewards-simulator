@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,13 +15,18 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from data import (
+    ensure_schema,
     format_month_label,
     get_connection,
     get_refresh_state,
+    load_brand_rewards,
     load_cocacola_skus,
     load_ferrera_skus,
     load_monster_skus,
+    load_proposed_points,
+    merge_proposed_points,
     read_orders,
+    save_brand_rewards,
 )
 from simulator import (
     BRAND_DEFAULTS,
@@ -36,7 +42,14 @@ from simulator import (
 BASE_DIR = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-app = FastAPI(title="M-Rewards Simulator")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    ensure_schema()
+    yield
+
+
+app = FastAPI(title="M-Rewards Simulator", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.add_middleware(
     SessionMiddleware,
@@ -101,33 +114,25 @@ def load_orders_or_error():
     return raw, state, None
 
 
-def proposed_key(brand: str) -> str:
-    return f"proposed_{brand}"
+def get_proposed(brand: str) -> dict[str, int]:
+    return load_proposed_points(brand)
 
 
-def rewards_key(brand: str) -> str:
-    return f"rewards_{brand}"
+def set_proposed(brand: str, patch: dict[str, int]) -> dict[str, int]:
+    """Overlay `patch` onto stored proposed points. Values ≤ 0 drop the override."""
+    return merge_proposed_points(brand, patch)
 
 
-def get_proposed(session, brand: str) -> dict[str, int]:
-    raw = session.get(proposed_key(brand)) or {}
-    return {str(k): int(v) for k, v in raw.items()}
-
-
-def set_proposed(session, brand: str, mapping: dict[str, int]) -> None:
-    session[proposed_key(brand)] = {str(k): int(v) for k, v in mapping.items()}
-
-
-def get_rewards(session, brand: str) -> list[tuple[str, int]]:
-    stored = session.get(rewards_key(brand))
+def get_rewards(brand: str) -> list[tuple[str, int]]:
+    stored = load_brand_rewards(brand)
     if stored:
         return [(str(n), int(p)) for n, p in stored]
     defaults = BRAND_DEFAULTS[brand]["rewards"]
     return list(defaults.items())
 
 
-def set_rewards(session, brand: str, rewards: list[tuple[str, int]]) -> None:
-    session[rewards_key(brand)] = [[n, int(p)] for n, p in rewards]
+def set_rewards(brand: str, rewards: list[tuple[str, int]]) -> None:
+    save_brand_rewards(brand, rewards)
 
 
 def enrich_skus(raw: pd.DataFrame, skus_df: pd.DataFrame) -> pd.DataFrame:
@@ -181,7 +186,8 @@ def parse_reward_form(form) -> list[tuple[str, int]]:
     return rewards
 
 
-def parse_proposed_form(form) -> dict[str, int]:
+def parse_proposed_patch(form) -> dict[str, int]:
+    """All posted SKUs. Values ≤ 0 mean 'remove override' when merged."""
     skus = form.getlist("sku")
     proposed_vals = form.getlist("proposed_points")
     out = {}
@@ -191,9 +197,12 @@ def parse_proposed_form(form) -> dict[str, int]:
             value = int(float(pts or 0))
         except (TypeError, ValueError):
             value = 0
-        if value > 0:
-            out[sku] = value
+        out[sku] = value
     return out
+
+
+def parse_proposed_form(form) -> dict[str, int]:
+    return {sku: pts for sku, pts in parse_proposed_patch(form).items() if pts > 0}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -297,8 +306,8 @@ def brand_page(request: Request, brand: str, month: str | None = None, q: str | 
         )
 
     selected_month = month if month in months else months[-1]
-    proposed = get_proposed(request.session, brand)
-    rewards = get_rewards(request.session, brand)
+    proposed = get_proposed(brand)
+    rewards = get_rewards(brand)
     flash = request.session.pop("flash", None)
 
     return TEMPLATES.TemplateResponse(
@@ -337,15 +346,15 @@ async def simulate_brand(
     rewards = parse_reward_form(form)
     if not rewards:
         rewards = list(BRAND_DEFAULTS[brand]["rewards"].items())
-    set_rewards(request.session, brand, rewards)
+    set_rewards(brand, rewards)
 
-    proposed = parse_proposed_form(form)
+    patch = parse_proposed_patch(form)
 
     if action == "bulk_apply":
         selected = set(form.getlist("selected_sku"))
         for sku in selected:
-            proposed[str(sku)] = int(bulk_value)
-        set_proposed(request.session, brand, proposed)
+            patch[str(sku)] = int(bulk_value)
+        set_proposed(brand, patch)
         request.session["flash"] = f"Applied {bulk_value} points to {len(selected)} SKUs."
         qs = f"?month={month}"
         if q:
@@ -359,19 +368,19 @@ async def simulate_brand(
         except (TypeError, ValueError):
             new_pts = 5000
         rewards.append((new_name, new_pts))
-        set_rewards(request.session, brand, rewards)
-        set_proposed(request.session, brand, proposed)
+        set_rewards(brand, rewards)
+        set_proposed(brand, patch)
         return RedirectResponse(url=f"/brands/{brand}?month={month}", status_code=303)
 
     if action.startswith("remove_reward_"):
         idx = int(action.split("_")[-1])
         if 0 <= idx < len(rewards):
             rewards.pop(idx)
-        set_rewards(request.session, brand, rewards)
-        set_proposed(request.session, brand, proposed)
+        set_rewards(brand, rewards)
+        set_proposed(brand, patch)
         return RedirectResponse(url=f"/brands/{brand}?month={month}", status_code=303)
 
-    set_proposed(request.session, brand, proposed)
+    proposed = set_proposed(brand, patch)
 
     raw, state, error = load_orders_or_error()
     if error:
@@ -425,14 +434,14 @@ async def import_points(
 
     skus_df = load_brand_skus(brand)
     valid = set(skus_df["sku"].dropna().astype(str))
-    sku_to_title = dict(zip(skus_df["sku"].astype(str), skus_df["product_title"]))
-    proposed = get_proposed(request.session, brand)
+    patch = {}
     matched = 0
     for sku, pts in points_map.items():
         if sku in valid:
-            proposed[sku] = int(pts)
+            patch[sku] = int(pts)
             matched += 1
-    set_proposed(request.session, brand, proposed)
+    if patch:
+        set_proposed(brand, patch)
     skipped = len(points_map) - matched
     msg = f"Imported points for {matched} SKUs."
     if skipped:
@@ -454,7 +463,7 @@ def export_skus(request: Request, brand: str):
         return Response(error, status_code=503, media_type="text/plain")
 
     skus_df = enrich_skus(raw, load_brand_skus(brand))
-    proposed = get_proposed(request.session, brand)
+    proposed = get_proposed(brand)
     rows = apply_proposed_to_rows(skus_df, proposed)
     export = pd.DataFrame(rows)
     cols = ["sku", "product_title"] + BRAND_DEFAULTS[brand]["extra_cols"] + [

@@ -36,6 +36,22 @@ CREATE TABLE IF NOT EXISTS refresh_state (
     last_refreshed_at     timestamptz,
     row_count             int
 );
+
+CREATE TABLE IF NOT EXISTS brand_proposed_points (
+    brand      text        NOT NULL,
+    sku        text        NOT NULL,
+    points     int         NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (brand, sku)
+);
+
+CREATE TABLE IF NOT EXISTS brand_rewards (
+    brand      text        NOT NULL,
+    sort       int         NOT NULL,
+    name       text        NOT NULL,
+    points     int         NOT NULL,
+    PRIMARY KEY (brand, sort)
+);
 """
 
 
@@ -303,6 +319,143 @@ def init_schema(conn) -> None:
         for statement in statements:
             cur.execute(statement)
     conn.commit()
+
+
+def ensure_schema() -> bool:
+    """Create tables when DATABASE_URL is configured. Returns True if init ran.
+
+    Used by the web app on startup so new tables exist without waiting for cron.
+    Unit tests (no database URL) skip this and get False.
+    """
+    try:
+        get_database_url()
+    except RuntimeError:
+        return False
+    conn = get_connection()
+    try:
+        init_schema(conn)
+        return True
+    finally:
+        conn.close()
+
+
+def _borrow_connection(conn):
+    """Return (conn, should_close). Opens a new connection when conn is None."""
+    if conn is not None:
+        return conn, False
+    return get_connection(), True
+
+
+def overlay_proposed_points(existing: dict[str, int], patch: dict[str, int]) -> dict[str, int]:
+    """Merge a proposed-points patch onto an existing map.
+
+    Keys omitted from `patch` are kept. Values ≤ 0 remove that SKU's override
+    so Excel current_points apply again.
+    """
+    out = {str(k): int(v) for k, v in existing.items() if int(v) > 0}
+    for sku, pts in patch.items():
+        sku = str(sku)
+        try:
+            value = int(pts)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            out[sku] = value
+        else:
+            out.pop(sku, None)
+    return out
+
+
+def load_proposed_points(brand: str, conn=None) -> dict[str, int]:
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT sku, points FROM brand_proposed_points WHERE brand = %s",
+                (brand,),
+            )
+            rows = cur.fetchall()
+        return {str(sku): int(pts) for sku, pts in rows if int(pts) > 0}
+    finally:
+        if close:
+            conn.close()
+
+
+def replace_proposed_points(brand: str, mapping: dict[str, int], conn=None) -> None:
+    from psycopg2.extras import execute_values
+
+    conn, close = _borrow_connection(conn)
+    try:
+        rows = [
+            (brand, str(sku), int(pts))
+            for sku, pts in mapping.items()
+            if int(pts) > 0
+        ]
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM brand_proposed_points WHERE brand = %s", (brand,))
+            if rows:
+                execute_values(
+                    cur,
+                    "INSERT INTO brand_proposed_points (brand, sku, points) VALUES %s",
+                    rows,
+                    page_size=1000,
+                )
+        conn.commit()
+    finally:
+        if close:
+            conn.close()
+
+
+def merge_proposed_points(brand: str, patch: dict[str, int], conn=None) -> dict[str, int]:
+    """Load existing overrides, overlay `patch`, write back. Returns the merged map."""
+    conn, close = _borrow_connection(conn)
+    try:
+        existing = load_proposed_points(brand, conn=conn)
+        merged = overlay_proposed_points(existing, patch)
+        replace_proposed_points(brand, merged, conn=conn)
+        return merged
+    finally:
+        if close:
+            conn.close()
+
+
+def load_brand_rewards(brand: str, conn=None) -> list[tuple[str, int]]:
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name, points FROM brand_rewards WHERE brand = %s ORDER BY sort",
+                (brand,),
+            )
+            rows = cur.fetchall()
+        return [(str(name), int(pts)) for name, pts in rows]
+    finally:
+        if close:
+            conn.close()
+
+
+def save_brand_rewards(brand: str, rewards: list[tuple[str, int]], conn=None) -> None:
+    from psycopg2.extras import execute_values
+
+    conn, close = _borrow_connection(conn)
+    try:
+        rows = [
+            (brand, idx, str(name), int(pts))
+            for idx, (name, pts) in enumerate(rewards)
+        ]
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM brand_rewards WHERE brand = %s", (brand,))
+            if rows:
+                execute_values(
+                    cur,
+                    "INSERT INTO brand_rewards (brand, sort, name, points) VALUES %s",
+                    rows,
+                    page_size=100,
+                )
+        conn.commit()
+    finally:
+        if close:
+            conn.close()
 
 
 def get_refresh_state(conn) -> dict | None:

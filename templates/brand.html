@@ -94,7 +94,7 @@
 
 <section class="panel sku-editor" id="sku-points">
   <h2>SKU Points</h2>
-  <p class="section-caption">Search, bulk-edit, and import/export points that drive the simulation.</p>
+  <p class="section-caption">Search, bulk-edit, and import/export points that drive the simulation. Saved for everyone.</p>
 
   <form method="post" action="/brands/{{ brand }}/import" enctype="multipart/form-data" class="import-row">
     <input type="hidden" name="month" value="{{ selected_month }}" />
@@ -162,7 +162,7 @@
 
 <section class="panel reward-thresholds" id="reward-thresholds">
   <h2>Reward Thresholds</h2>
-  <p class="section-caption">Add or remove rewards and set the point cutoffs stores must reach.</p>
+  <p class="section-caption">Add or remove rewards and set the point cutoffs stores must reach. Saved for everyone.</p>
   <div class="rewards-grid">
     {% for name, pts in rewards %}
     <div class="reward-card">
