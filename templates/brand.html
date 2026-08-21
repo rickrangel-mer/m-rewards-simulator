@@ -2,11 +2,34 @@
 {% block title %}{{ brand_label }} — M-Rewards Simulator{% endblock %}
 {% block content %}
 <h1>{{ brand_label }}</h1>
-<p class="subtitle">Simulating with {{ selected_month }} ordering data</p>
 
-{% if results %}
-<section class="panel results">
-  <h2>Simulation Results</h2>
+<form method="post" action="/brands/{{ brand }}/simulate" id="sim-form">
+  <input type="hidden" name="month" value="{{ selected_month }}" />
+</form>
+
+<section class="panel results" id="simulation-results">
+  <div class="section-header">
+    <div>
+      <h2>Simulation Results</h2>
+      <p class="section-caption">Using {{ selected_month_label }} ordering data</p>
+    </div>
+    <form method="get" action="/brands/{{ brand }}" class="month-picker" id="month-form">
+      {% if search %}
+      <input type="hidden" name="q" value="{{ search }}" />
+      {% endif %}
+      <label>
+        Simulation month
+        <select name="month" onchange="this.form.submit()">
+          {% for value, label in month_options %}
+          <option value="{{ value }}" {% if value == selected_month %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <noscript><button type="submit" class="button secondary">Show month</button></noscript>
+    </form>
+  </div>
+
+  {% if results %}
   <div class="metrics">
     <div><span class="metric-label">Total Stores</span><strong>{{ "{:,}".format(results.total_stores) }}</strong></div>
     <div><span class="metric-label">Avg Points/Store</span><strong>{{ "{:,.0f}".format(results.avg_points) }}</strong></div>
@@ -66,106 +89,97 @@
       </table>
     </div>
   </details>
+  {% endif %}
 </section>
-{% endif %}
 
-<form method="post" action="/brands/{{ brand }}/import" enctype="multipart/form-data" class="import-row">
-  <input type="hidden" name="month" value="{{ selected_month }}" />
-  <label class="file-label">
-    Import proposed points (CSV/Excel with sku + points)
-    <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
-  </label>
-  <button type="submit" class="button secondary">Import</button>
-  <a class="button secondary" href="/brands/{{ brand }}/export">Export SKU CSV</a>
-</form>
+<section class="panel sku-editor" id="sku-points">
+  <h2>SKU Points</h2>
+  <p class="section-caption">Search, bulk-edit, and import/export points that drive the simulation.</p>
 
-<form method="post" action="/brands/{{ brand }}/simulate" id="sim-form">
-  <section class="panel">
-    <div class="controls">
-      <label>
-        Simulation month
-        <select name="month" onchange="this.form.action='/brands/{{ brand }}'; this.form.method='get'; this.form.submit()">
-          {% for m in months %}
-          <option value="{{ m }}" {% if m == selected_month %}selected{% endif %}>{{ m }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>
-        Search SKUs
-        <input type="search" name="q" value="{{ search }}" placeholder="Filter by SKU or title" />
-      </label>
-      <label>
-        Bulk point value
-        <input type="number" name="bulk_value" min="0" max="5000" step="50" value="{{ bulk_value or 100 }}" />
-      </label>
-      <button type="submit" name="action" value="bulk_apply" class="button secondary">Apply to selected</button>
-    </div>
-  </section>
+  <form method="post" action="/brands/{{ brand }}/import" enctype="multipart/form-data" class="import-row">
+    <input type="hidden" name="month" value="{{ selected_month }}" />
+    <label class="file-label">
+      Import proposed points (CSV/Excel with sku + points)
+      <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
+    </label>
+    <button type="submit" class="button secondary">Import</button>
+    <a class="button secondary" href="/brands/{{ brand }}/export">Export SKU CSV</a>
+  </form>
 
-  <section class="panel">
-    <h2>SKU Point Editor</h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th></th>
-            <th>SKU</th>
-            <th>Product Title</th>
-            {% for col in extra_cols %}
-            <th>{{ col | replace('_', ' ') | title }}</th>
-            {% endfor %}
-            <th>Store Penetration</th>
-            <th>Current Points</th>
-            <th>Proposed Points</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in rows %}
-          <tr>
-            <td><input type="checkbox" name="selected_sku" value="{{ row.sku }}" /></td>
-            <td>
-              {{ row.sku }}
-              <input type="hidden" name="sku" value="{{ row.sku }}" />
-            </td>
-            <td>{{ row.product_title }}</td>
-            {% for col in extra_cols %}
-            <td>{{ row.get(col, '') }}</td>
-            {% endfor %}
-            <td class="num">{{ row.store_penetration }}</td>
-            <td class="num">{{ row.current_points }}</td>
-            <td>
-              <input type="number" name="proposed_points" min="0" max="5000" step="50"
-                     value="{{ row.proposed_points }}" />
-            </td>
-          </tr>
-          {% else %}
-          <tr><td colspan="8">No SKUs match this search.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="panel">
-    <h2>Reward Thresholds</h2>
-    <div class="rewards-grid">
-      {% for name, pts in rewards %}
-      <div class="reward-card">
-        <input type="text" name="reward_name" value="{{ name }}" />
-        <input type="number" name="reward_points" min="0" step="500" value="{{ pts }}" />
-        <button type="submit" name="action" value="remove_reward_{{ loop.index0 }}" class="button danger">Remove</button>
-      </div>
-      {% endfor %}
-    </div>
-    <div class="add-reward">
-      <input type="text" name="new_reward_name" placeholder="New reward name" />
-      <input type="number" name="new_reward_points" min="0" step="500" value="5000" />
-      <button type="submit" name="action" value="add_reward" class="button secondary">Add Reward</button>
-    </div>
-  </section>
-
-  <div class="actions">
-    <button type="submit" name="action" value="simulate" class="button primary">Update Simulation</button>
+  <div class="controls sku-tools">
+    <label>
+      Search SKUs
+      <input form="sim-form" type="search" name="q" value="{{ search }}" placeholder="Filter by SKU or title" />
+    </label>
+    <label>
+      Bulk point value
+      <input form="sim-form" type="number" name="bulk_value" min="0" max="5000" step="50" value="{{ bulk_value or 100 }}" />
+    </label>
+    <button form="sim-form" type="submit" name="action" value="bulk_apply" class="button secondary">Apply to selected</button>
   </div>
-</form>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th>SKU</th>
+          <th>Product Title</th>
+          {% for col in extra_cols %}
+          <th>{{ col | replace('_', ' ') | title }}</th>
+          {% endfor %}
+          <th>Store Penetration</th>
+          <th>Current Points</th>
+          <th>Proposed Points</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td><input form="sim-form" type="checkbox" name="selected_sku" value="{{ row.sku }}" /></td>
+          <td>
+            {{ row.sku }}
+            <input form="sim-form" type="hidden" name="sku" value="{{ row.sku }}" />
+          </td>
+          <td>{{ row.product_title }}</td>
+          {% for col in extra_cols %}
+          <td>{{ row.get(col, '') }}</td>
+          {% endfor %}
+          <td class="num">{{ row.store_penetration }}</td>
+          <td class="num">{{ row.current_points }}</td>
+          <td>
+            <input form="sim-form" type="number" name="proposed_points" min="0" max="5000" step="50"
+                   value="{{ row.proposed_points }}" />
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8">No SKUs match this search.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel reward-thresholds" id="reward-thresholds">
+  <h2>Reward Thresholds</h2>
+  <p class="section-caption">Add or remove rewards and set the point cutoffs stores must reach.</p>
+  <div class="rewards-grid">
+    {% for name, pts in rewards %}
+    <div class="reward-card">
+      <input form="sim-form" type="text" name="reward_name" value="{{ name }}" />
+      <input form="sim-form" type="number" name="reward_points" min="0" step="500" value="{{ pts }}" />
+      <button form="sim-form" type="submit" name="action" value="remove_reward_{{ loop.index0 }}" class="button danger">Remove</button>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="add-reward">
+    <input form="sim-form" type="text" name="new_reward_name" placeholder="New reward name" />
+    <input form="sim-form" type="number" name="new_reward_points" min="0" step="500" value="5000" />
+    <button form="sim-form" type="submit" name="action" value="add_reward" class="button secondary">Add Reward</button>
+  </div>
+</section>
+
+<div class="actions">
+  <button form="sim-form" type="submit" name="action" value="simulate" class="button primary">Update Simulation</button>
+</div>
 {% endblock %}
