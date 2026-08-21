@@ -1,9 +1,9 @@
-# Handoff: Store inclusion (P2) and per-brand color (P3)
+# Handoff: Create a new brand from a modal (P4)
 
 **Owner:** Rick (PM)  
 **Repo:** `rickrangel-mer/m-rewards-simulator`  
 **Product list:** [`backlog.md`](backlog.md)  
-**This brief:** P2 and P3 only. Do not do P4. Do not reintroduce Streamlit. Do not change `start.sh` web vs `SERVICE_ROLE=refresh`.
+**This brief:** P4 only. Do not reintroduce Streamlit. Do not change `start.sh` web vs `SERVICE_ROLE=refresh`. Do not add logos. Do not trigger Athena from the website.
 
 ---
 
@@ -12,159 +12,141 @@
 | Item | Status |
 |---|---|
 | **P0** proposed points + rewards in Postgres | **On `main`** — [PR #6](https://github.com/rickrangel-mer/m-rewards-simulator/pull/6) |
-| **P1** web-managed SKU catalogs | **Merged, but not on `main`.** [PR #7](https://github.com/rickrangel-mer/m-rewards-simulator/pull/7) targeted `cursor/persist-proposed-rewards-1268` (P0’s branch). `#6` was squash-merged to `main`, so that P0 branch is **not** an ancestor of `main`. |
-| **P2 / P3** | This handoff |
+| **P1** web-managed SKU catalogs (`brand_skus`) | **On `main`** — landed via [PR #9](https://github.com/rickrangel-mer/m-rewards-simulator/pull/9) (rebase of #7 onto `main`) |
+| **P2** store-inclusion review | **On `main`** — [PR #9](https://github.com/rickrangel-mer/m-rewards-simulator/pull/9). Denominator is **A** (current-month brand orderers). `SUM(li.initial_quantity)` stays. Caption + tests. Athena SQL unchanged. |
+| **P3** per-brand color | **On `main`** — [PR #9](https://github.com/rickrangel-mer/m-rewards-simulator/pull/9), palettes [PR #10](https://github.com/rickrangel-mer/m-rewards-simulator/pull/10), two-color split [PR #11](https://github.com/rickrangel-mer/m-rewards-simulator/pull/11) |
+| **P4** | This handoff |
 
-**Start from `origin/main`.** Before depending on catalog tables (`brand_skus`, catalog upload/download), **land P1 on `main` first**: rebase `origin/cursor/web-managed-catalogs-1268` onto `main` (do not merge the old P0 commit `cd63c58` — it duplicates squash `#6`) and open a PR. If P1 is already on `main` when you start, skip that.
-
-After P1 is on `main`: SKU lists and `current_points` live in Postgres (`brand_skus`), seeded once from the git xlsx files. Proposed points / rewards stay in `brand_proposed_points` / `brand_rewards`. Excel is bulk-edit format, not live config.
+**Start from `origin/main`.** Catalogs, proposed points, rewards, and the three brand palettes are already there. Nav and `load_brand_skus` still key off hardcoded [`BRAND_DEFAULTS`](simulator.py) / [`CATALOG_BRANDS`](data.py) (`coca-cola`, `monster`, `ferrera`). That is the P4 problem.
 
 ---
 
 ## What this product is
 
-Internal simulator for Mercaso M-Rewards. For a brand (Coca-Cola / Monster / Ferrera), pick a month of historical orders, set points per SKU and reward thresholds, and see how many stores would earn each reward.
+Internal simulator for Mercaso M-Rewards. For a brand, pick a month of historical orders, set points per SKU and reward thresholds, and see how many stores would earn each reward.
 
 **Data path:**
 - Order snapshots in Railway Postgres (`orders`, `refresh_state`)
 - Monthly Athena pull via cron (`SERVICE_ROLE=refresh` → `refresh_orders.py`)
 - Web app never talks to Athena
 - FastAPI + Jinja2; sectioned brand page (month+results, SKU tools, reward thresholds)
+- SKU lists live in `brand_skus`; Excel is bulk-edit (upload/download), not live config
 
 ---
 
-## P2 — Review store-inclusion logic
+## P4 — New brand from a modal (not a code template)
 
-Rick’s concern: stores without “enough” purchases may be dropped, so reward “% of stores” and Total Stores look too optimistic or too small.
+Rick’s wording: **“template” means a modal** that lets an operator create a new brand page. It is **not** a developer copy-paste of `BRAND_DEFAULTS` and a new git xlsx.
 
-### Investigate first. Change the query only if the product rule is wrong.
+There is no new-brand UI today. Adding a fourth brand requires a code change (`BRAND_DEFAULTS`, `CATALOG_BRANDS`, `load_brand_skus` / seed, nav loop in [`templates/base.html`](templates/base.html)). After P4, an operator should do it from the website.
 
-There is **no** `HAVING` / min-quantity filter today. What *does* drop stores:
+### What the modal must collect
 
-1. **Athena** [`fetch_order_data()`](data.py) — only rows for SKUs on the brand catalog (`li.sku IN (...)`). `SUM(li.initial_quantity)` as `total_quantity`. Latest `dt` partition on both line-item and order tables. **No** cancelled-order predicate, **no** net-quantity, **no** store-status filter.
-2. **Simulator** [`get_month_orders()`](simulator.py) — selected calendar month, brand SKUs only.
-3. **[`simulate()`](simulator.py)** — `groupby store_id` on those rows. A store is scored iff it ordered **≥1** of those SKUs in the selected month.
-4. **“% of stores” / Total Stores** — that population, **not** all Mercaso stores, **not** “ever ordered this brand.”
-5. **Store-level detail** table — top **500** by points (`summarize_results()`). Metrics and reward counts still use the full population.
-6. **Histogram** — clips the **99th percentile for chart bins only**; averages / max / reward counts are unclipped.
-7. **SKU “store penetration”** column — `nunique(store_id)` over **all months loaded in Postgres**, not the selected month.
+Show a short **requirements list** in the modal so the operator knows what is needed before submit. Required:
 
-`rewards_analysis.py` uses a different cohort idea (rewards SKUs vs all stores in the dump). Do not treat that script as the website rule.
-
-### Product question to answer in the PR
-
-Which denominator does Rick want?
-
-| Option | Meaning |
+| Field | Notes |
 |---|---|
-| **A. Current-month orderers of this brand’s SKUs** | What the code does today |
-| **B. Ever-ordered-this-brand** (any month in Postgres) | Stores with 0 points this month still in the % |
-| **C. All Mercaso stores** | Needs a store universe Athena does not currently pull |
+| **Display name** | e.g. `Pepsi`. Shown in the nav and `<h1>`. |
+| **URL slug** | e.g. `pepsi`. Lowercase `[a-z0-9-]+`. Unique. Prefill from the display name; operator can edit. Must not collide with `coca-cola` / `monster` / `ferrera` or another saved brand. |
+| **Participating SKUs Excel/CSV** | Canonical catalog upload: `sku`, `product_title`, `current_points` (optional `size`, `brand`, `category`). Reuse [`parse_catalog_file()`](data.py). Same format as **Download catalog Excel** on an existing brand page. This is the participating-SKU list for simulation and for the next Athena refresh (`load_all_skus()`). |
+| **At least one reward** | Name + point cutoff (same idea as the Reward Thresholds section). One row is enough; allow adding more in the modal. |
 
-Also: is `SUM(li.initial_quantity)` the right qty (vs net, cancelled, returned)?
+Optional:
 
-**If A is correct:** do not change Athena. Optionally add a one-line caption on the results panel so “Total Stores” / “% of stores” is not misread (e.g. “Stores that ordered this brand this month”). Add tests that document the rule (a store with no brand SKUs in the month is absent; histogram clip does not change `total_stores`).
+| Field | Notes |
+|---|---|
+| **Palette** | Reuse a P3 theme: Coca-Cola (red/white), Monster (black + lime), Ferrera/Nerds (pink/purple/blue), or default teal. Do **not** invent a hex picker. |
 
-**If B or C or quantity is wrong:** smallest code change that matches the rule. Keep `start.sh` split. SKU list for Athena is Postgres `load_all_skus()` once P1 is on `main` (Excel union only if you are still on pre-P1 `main`).
+Do **not** require a git workbook. Do **not** ask for a logo.
 
-### P2 tests
+### After save
 
-- Prefer unit tests on `get_month_orders` / `simulate` / `summarize_results` with small DataFrames. Do **not** add live Athena tests.
-- If you change `fetch_order_data` SQL, extend [`test_fetch_order_data_builds_exclusive_month_query`](test_data.py).
-- `pytest` green. Do not break brand sectioning.
+1. Persist the brand in a **Postgres registry** (new `brands` table or equivalent: slug, label, theme, sort).
+2. Write the uploaded catalog to `brand_skus` for that slug (same path as catalog replace).
+3. Write the reward name(s) + cutoff(s) to `brand_rewards`.
+4. Nav in [`templates/base.html`](templates/base.html) lists **registry brands**, not `BRAND_DEFAULTS` keys.
+5. Redirect to `/brands/<slug>`. The page uses the **existing** sectioned [`templates/brand.html`](templates/brand.html) (month + results, SKU tools, reward thresholds). No new simulator layout.
+6. Seed the original three brands into the registry on boot if it is empty (from `BRAND_DEFAULTS`), so Coca-Cola / Monster / Ferrera keep working without a manual migrate.
 
-### P2 out of scope
+### Simulation / Athena
 
-P4, Streamlit, auth, replacing catalogs, per-brand colors (that is P3), rewriting the cron.
+- Website still never talks to Athena.
+- `refresh_orders.py` already uses `load_all_skus()` over `brand_skus`. New participating SKUs are included on the **next** cron (or a manual refresh job).
+- If the uploaded SKUs already exist in `orders` (they were on another brand’s catalog, or a previous pull), the new page can simulate immediately.
+- If they are net-new SKUs, the brand page exists but results stay empty until refresh. Say that in the modal (one line under the SKU upload). Do **not** add a “Run Athena” button.
 
----
+### Theme hook (needed so a fourth slug is not stuck on teal)
 
-## P3 — Per-brand ambient color
+Today CSS is `body[data-brand="coca-cola"]` etc. A new slug will not match. Smallest fix: set `data-theme="{{ theme }}"` on `<body>` (existing three map 1:1: `coca-cola` / `monster` / `ferrera`) and point the P3 blocks at `body[data-theme="..."]`. Keep `data-brand="{{ brand }}"` for tests and debugging. Default / unknown theme stays `:root` teal.
 
-One palette today (`--accent: #0f6a5a` in [`static/styles.css`](static/styles.css)). Histogram bars are hardcoded `#3d8f7f`. Coca-Cola / Monster / Ferrera pages should feel different (header, nav pills, buttons, metric cards, histogram) **without** a branding overhaul.
+### UX sketch
 
-**Still blocked on Rick** for final brand examples. Do **not** wait forever: ship the `data-brand` hook and three variable blocks using the **starter** hex below so the pages are distinguishable. Rick can swap values in CSS later.
+- **New brand** control in the topbar next to the brand nav (every page that uses [`templates/base.html`](templates/base.html)).
+- Native `<dialog>` (or equivalent). No React, no Streamlit. A few lines of JS to `.showModal()` is fine.
+- One modal, not a multi-step wizard. Checklist of requirements at the top, then the fields, then Create.
+- Validate server-side: missing file, catalog parse error, empty name, bad/duplicate slug, zero rewards → flash and stay put (re-open modal or redirect with flash).
+- Existing catalog **Preview / Merge / Replace** on the brand page stays for later edits. The create modal can write the catalog in one shot (replace into empty).
 
-Starter (draft — replace if Rick provided swatches in the prompt):
+### Implementation notes
 
-| Brand slug | Accent | Soft / wash | Notes |
-|---|---|---|---|
-| `coca-cola` | `#c8102e` | `#fde8eb` | Coca-Cola red |
-| `monster` | `#6abf4b` | `#e8f6e1` | Energy-drink green on the existing light gray UI |
-| `ferrera` | `#8a5a2b` | `#f4ebe3` | Confection / gold-brown |
+- Replace hardcoded `if brand not in BRAND_DEFAULTS` gates with “slug in registry.”
+- `CATALOG_BRANDS` / `seed_brand_catalogs()` should keep seeding **only** the original three git xlsx files. New brands are operator-uploaded, never seeded from git.
+- `extra_cols` already comes from catalog columns when present ([`extra_cols_for()`](app.py)); new brands do not need a hardcoded extra-col list.
+- Default rewards in `BRAND_DEFAULTS` remain fallbacks for the original three if `brand_rewards` is empty. A newly created brand always has the rewards from the modal.
+- Flash stays on the session cookie. Registry / catalogs / rewards stay in Postgres.
+- Keep layout/sectioning. Keep the P3 palettes. Keep store-inclusion captions.
 
-Keep `--bg`, `--surface`, `--ink`, `--danger` shared unless a swatch says otherwise.
+### P4 tests
 
-### Implementation sketch
+- Prefer the existing FakeStore pattern in [`test_app.py`](test_app.py). No live Railway or Athena.
+- GET a brand page → modal markup includes the requirements (display name, slug, SKU Excel, at least one reward).
+- POST a valid create → registry + catalog + rewards stored; nav lists the new label; `GET /brands/<slug>` is 200 and still sectioned (`simulation-results`, `sku-points`, `reward-thresholds`).
+- Missing SKU file / unparseable Excel / duplicate slug / no reward → 4xx or redirect+flash; no half-written brand.
+- Coca-Cola / Monster / Ferrera still render sectioned; `data-brand` still present; existing catalog upload tests still pass.
+- `pytest` green.
 
-1. Set `data-brand="{{ brand }}"` on `<body>` in [`templates/base.html`](templates/base.html) (and catalog preview, which extends base). `brand_page_context` already passes `brand`.
-2. In CSS: `:root` stays the current teal (home redirect is Coca-Cola; unknown/error pages can keep default). Then:
+### P4 out of scope
 
-```css
-body[data-brand="coca-cola"] { --accent: #c8102e; --accent-soft: #fde8eb; }
-body[data-brand="monster"] { ... }
-body[data-brand="ferrera"] { ... }
-```
-
-3. Point hardcoded teal at variables: `.bar-fill`, `.brand-nav a.active` border, `body` radial-gradient (use `color-mix` or a `--accent-wash` variable). Do not leave `#3d8f7f` / `#b7ddd3` / `rgba(15, 106, 90, …)` as the only brand look.
-4. Keep layout and sectioning. No new screens. New brands (P4) should pick or inherit a theme later — optional `theme` field is **not** required now.
-
-### P3 tests
-
-- GET each of `coca-cola`, `monster`, `ferrera` → `data-brand="<slug>"` on the body.
-- Sectioning tests still pass.
-- Do not require visual snapshots.
-
-### P3 out of scope
-
-Custom brand-picker UI, uploading logos, dark mode, P4 new-brand flow.
+Deleting or renaming a brand, uploading logos, hex color picker, auth, Streamlit, changing `start.sh`, calling Athena from the web, a fourth git Excel workbook, a separate “brand CMS” site.
 
 ---
 
 ## Shared constraints
 
 - FastAPI + Jinja2 only.
-- Flash stays on the session cookie; proposed points / rewards / catalogs stay in Postgres (P0/P1).
 - `pytest` must pass without a real Railway DB or Athena.
-- Smoke all three brand keys.
+- Smoke `coca-cola`, `monster`, `ferrera` plus the new slug in tests.
 - Do not edit git Excel workbooks as live config.
 
 ---
 
 ## Suggested order
 
-1. Land P1 on `main` if it is not there (rebase catalog branch onto `main`, PR, merge).
-2. **P2:** document current inclusion in the PR; change Athena/simulator only if the product rule is not A.
-3. **P3:** `data-brand` + CSS variables; starter palettes unless Rick supplied hex.
-4. Run `pytest`, commit, push, open a PR (separate PRs for P2 vs P3 is fine; one PR is fine if both are small).
+1. `brands` registry + seed the original three + `data-theme` so palettes are reusable.
+2. Swap nav / `brand not in BRAND_DEFAULTS` to the registry.
+3. Topbar **New brand** + `<dialog>` with the requirements list and fields.
+4. POST handler: parse catalog, save registry + `brand_skus` + `brand_rewards`, redirect.
+5. Tests, `pytest`, commit, push, open a PR.
 
 ---
 
 ## Acceptance
 
-**P2**
-1. PR states the denominator in one sentence (A, B, or C) and whether `initial_quantity` stays.
-2. If the rule did not change: caption and/or tests make current behavior obvious.
-3. If the rule changed: website numbers match it; Athena cron still exits; `start.sh` roles unchanged.
-4. Histogram still does not silently drop stores from Total Stores / reward counts.
-
-**P3**
-1. Opening Coca-Cola vs Monster vs Ferrera is visibly different (accent, nav, buttons, histogram).
-2. Layout/sectioning unchanged.
-3. `data-brand` present for all three slugs.
+1. Operator opens **New brand**, sees the requirements (including participating SKUs Excel), fills them, and gets a new nav item + sectioned brand page without a code change.
+2. Coca-Cola / Monster / Ferrera still work; no Streamlit; `start.sh` roles unchanged.
+3. New SKUs are in `brand_skus` (and therefore the next Athena `load_all_skus()`). The UI explains they will not simulate until orders for those SKUs exist in Postgres.
+4. Palette choice reuses P3 themes via `data-theme`. Layout/sectioning unchanged.
 
 ---
 
 ## Paste-ready agent prompt
 
 ```
-Read HANDOFF.md and implement P2 and P3 only.
+Read HANDOFF.md and implement P4 only.
 
-Baseline: origin/main. If P1 catalogs (brand_skus, catalog upload/download) are not on main yet, rebase origin/cursor/web-managed-catalogs-1268 onto main first (PR #7 merged into the P0 branch, not main; do not re-merge squash PR #6). Do not do P4. Do not change start.sh web vs refresh. Do not reintroduce Streamlit.
+Baseline: origin/main. P0–P3 are on main (catalogs, store-inclusion A, per-brand colors). Do not change start.sh web vs SERVICE_ROLE=refresh. Do not reintroduce Streamlit. Do not add logos. Do not call Athena from the web.
 
-P2: Rick thinks stores without “enough” purchases may be dropped. Investigate fetch_order_data / get_month_orders / simulate / summarize_results first. There is no HAVING today. Document the denominator (current-month brand orderers vs ever-ordered vs all Mercaso stores) and whether SUM(initial_quantity) is correct. Change Athena/simulator only if the product rule is wrong. If current behavior is correct, add a results caption and unit tests that lock it in. No live Athena tests.
+P4: “Template” means an operator modal, not a developer code template. Add a New brand control that opens a modal listing requirements: display name, URL slug, participating SKUs Excel/CSV (canonical sku / product_title / current_points, reuse parse_catalog_file), and at least one reward name + cutoff. Optional: pick an existing P3 palette (coca-cola / monster / ferrera / default). Persist a Postgres brand registry; seed the original three if empty. Nav reads the registry. Redirect to /brands/<slug> using the existing sectioned brand.html. New SKUs appear in simulations after the next Athena refresh (or immediately if those SKUs already have rows in orders). Point CSS at data-theme so a new slug can reuse palettes.
 
-P3: Per-brand ambient color via data-brand on <body> and CSS variables. Keep layout/sectioning. Use HANDOFF.md starter hex unless Rick provided swatches. Replace hardcoded histogram/nav teal with variables.
-
-pytest must pass without Railway/Athena. Smoke coca-cola, monster, ferrera. Commit, push, open a PR (one or two PRs).
+pytest must pass without Railway/Athena. Smoke coca-cola, monster, ferrera, plus creating a fourth brand in FakeStore. Commit, push, open a PR.
 ```
