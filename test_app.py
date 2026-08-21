@@ -678,11 +678,12 @@ def test_brand_theme_css_uses_variables_and_palettes():
     client = TestClient(webapp.app)
     css = client.get("/static/styles.css").text
     assert 'body[data-brand="coca-cola"]' in css
-    assert "#c8102e" in css
+    assert "#f40009" in css
     assert 'body[data-brand="monster"]' in css
-    assert "#6abf4b" in css
+    assert "#8dc63f" in css
     assert 'body[data-brand="ferrera"]' in css
-    assert "#8a5a2b" in css
+    assert "#e4007c" in css
+    assert "--on-accent" in css
     assert "#3d8f7f" not in css
     assert "rgba(15, 106, 90" not in css
     assert ".bar-fill" in css
