@@ -70,6 +70,9 @@ def test_get_database_url_rejects_unresolved_reference():
     with patch.dict(os.environ, {"DATABASE_URL": "${{Postgres.DATABASE_URL}}"}, clear=True):
         with pytest.raises(RuntimeError, match="Could not build"):
             get_database_url()
+
+
+def test_safe_int_handles_nan_and_blank():
     from data import _safe_int
     import math
 

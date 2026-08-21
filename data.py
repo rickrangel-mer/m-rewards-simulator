@@ -291,7 +291,6 @@ def get_database_url() -> str:
         f"then redeploy. {hint}"
     )
 
-
 def get_connection(database_url: str | None = None):
     import psycopg2
 
