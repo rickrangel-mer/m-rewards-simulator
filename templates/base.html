@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}M-Rewards Simulator{% endblock %}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark">
+      <a href="/">M-Rewards Simulator</a>
+      {% if freshness %}
+      <span class="freshness">Order data through {{ freshness }}</span>
+      {% endif %}
+    </div>
+    <nav class="brand-nav">
+      {% for key, meta in brands.items() %}
+      <a href="/brands/{{ key }}" class="{% if brand == key %}active{% endif %}">{{ meta.label }}</a>
+      {% endfor %}
+    </nav>
+  </header>
+  <main class="container">
+    {% if flash %}
+    <div class="flash">{{ flash }}</div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

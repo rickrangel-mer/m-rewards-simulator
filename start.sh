@@ -6,10 +6,6 @@ if [ "$SERVICE_ROLE" = "refresh" ]; then
   exec python refresh_orders.py
 fi
 
-echo "Starting Streamlit web app..."
-exec streamlit run rewards_simulator.py \
-  --server.port "$PORT" \
-  --server.address 0.0.0.0 \
-  --server.headless true \
-  --server.enableCORS false \
-  --server.enableXsrfProtection false
+PORT="${PORT:-8080}"
+echo "Starting FastAPI web app on port ${PORT}..."
+exec python -m uvicorn app:app --host 0.0.0.0 --port "$PORT"
