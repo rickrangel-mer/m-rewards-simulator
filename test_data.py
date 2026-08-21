@@ -7,8 +7,10 @@ import pytest
 
 from data import (
     SCHEMA_SQL,
+    DuplicateBrandError,
     backfill_windows,
     catalog_frame,
+    create_brand,
     diff_catalog,
     ensure_schema,
     fetch_order_data,
@@ -28,6 +30,7 @@ from data import (
     replace_proposed_points,
     save_brand_rewards,
     seed_brand_catalogs,
+    seed_brand_registry,
 )
 from refresh_orders import refresh_windows, run_refresh
 
@@ -281,6 +284,7 @@ def test_schema_sql_includes_proposed_and_rewards_tables():
     assert "brand_proposed_points" in SCHEMA_SQL
     assert "brand_rewards" in SCHEMA_SQL
     assert "brand_skus" in SCHEMA_SQL
+    assert "CREATE TABLE IF NOT EXISTS brands" in SCHEMA_SQL
     assert "PRIMARY KEY (brand, sku)" in SCHEMA_SQL
     assert "PRIMARY KEY (brand, sort)" in SCHEMA_SQL
 
@@ -298,6 +302,7 @@ def test_init_schema_executes_new_tables():
     assert "CREATE TABLE IF NOT EXISTS brand_proposed_points" in sql_ran
     assert "CREATE TABLE IF NOT EXISTS brand_rewards" in sql_ran
     assert "CREATE TABLE IF NOT EXISTS brand_skus" in sql_ran
+    assert "CREATE TABLE IF NOT EXISTS brands" in sql_ran
     conn.commit.assert_called()
 
 
@@ -313,9 +318,11 @@ def test_ensure_schema_inits_when_url_present():
     with patch("data.get_database_url", return_value="postgresql://example"), \
          patch("data.get_connection", return_value=conn), \
          patch("data.init_schema") as init, \
+         patch("data.seed_brand_registry") as seed_registry, \
          patch("data.seed_brand_catalogs") as seed:
         assert ensure_schema() is True
         init.assert_called_once_with(conn)
+        seed_registry.assert_called_once_with(conn)
         seed.assert_called_once_with(conn)
         conn.close.assert_called_once()
 
@@ -551,3 +558,59 @@ def test_replace_catalog_skus_deletes_then_inserts_and_prunes_proposed():
     rows = execute_values.call_args[0][2]
     assert rows[0][:4] == ("coca-cola", "SKU-A", "A", 10)
     conn.commit.assert_called()
+
+
+def test_seed_brand_registry_skips_when_populated():
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    cursor.fetchone.return_value = (3,)
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch("psycopg2.extras.execute_values") as execute_values:
+        seeded = seed_brand_registry(conn=conn)
+
+    assert seeded == 0
+    execute_values.assert_not_called()
+    conn.commit.assert_not_called()
+
+
+def test_seed_brand_registry_inserts_original_three_when_empty():
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    cursor.fetchone.return_value = (0,)
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch("psycopg2.extras.execute_values") as execute_values:
+        seeded = seed_brand_registry(conn=conn)
+
+    assert seeded == 3
+    rows = execute_values.call_args[0][2]
+    assert rows == [
+        ("coca-cola", "Coca-Cola", "coca-cola", 0),
+        ("monster", "Monster", "monster", 1),
+        ("ferrera", "Ferrera", "ferrera", 2),
+    ]
+    conn.commit.assert_called()
+
+
+def test_create_brand_raises_on_duplicate_without_writes():
+    conn = MagicMock()
+    with patch("data.get_brand", return_value={"slug": "pepsi", "label": "Pepsi"}), \
+         patch("data.replace_catalog_skus") as replace, \
+         patch("data.save_brand_rewards") as save:
+        with pytest.raises(DuplicateBrandError):
+            create_brand(
+                "pepsi",
+                "Pepsi",
+                "default",
+                [{"sku": "A", "product_title": "A", "current_points": 1}],
+                [("Cooler", 5000)],
+                conn=conn,
+            )
+    replace.assert_not_called()
+    save.assert_not_called()
+    conn.rollback.assert_called()

@@ -6,7 +6,7 @@
   <title>{% block title %}M-Rewards Simulator{% endblock %}</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
-<body data-brand="{{ brand }}">
+<body data-brand="{{ brand }}" data-theme="{{ theme or 'default' }}">
   <header class="topbar">
     <div class="brand-mark">
       <a href="/">M-Rewards Simulator</a>
@@ -14,11 +14,14 @@
       <span class="freshness">Order data through {{ freshness }}</span>
       {% endif %}
     </div>
-    <nav class="brand-nav">
-      {% for key, meta in brands.items() %}
-      <a href="/brands/{{ key }}" class="{% if brand == key %}active{% endif %}">{{ meta.label }}</a>
-      {% endfor %}
-    </nav>
+    <div class="brand-nav-actions">
+      <nav class="brand-nav">
+        {% for key, meta in brands.items() %}
+        <a href="/brands/{{ key }}" class="{% if brand == key %}active{% endif %}">{{ meta.label }}</a>
+        {% endfor %}
+      </nav>
+      <button type="button" class="button secondary" id="new-brand-open">New brand</button>
+    </div>
   </header>
   <main class="container">
     {% if flash %}
@@ -26,5 +29,99 @@
     {% endif %}
     {% block content %}{% endblock %}
   </main>
+
+  <dialog id="new-brand-dialog">
+    <form method="post" action="/brands/create" enctype="multipart/form-data" class="new-brand-form" id="new-brand-form">
+      <h2>New brand</h2>
+      <p class="section-caption">Required before you can simulate a new brand:</p>
+      <ul class="requirements-list">
+        <li>Display name</li>
+        <li>URL slug</li>
+        <li>Participating SKUs Excel/CSV (sku, product_title, current_points)</li>
+        <li>At least one reward name and point cutoff</li>
+      </ul>
+
+      <input type="hidden" name="return_to" value="{% if brand %}/brands/{{ brand }}{% else %}/{% endif %}" />
+
+      <label>
+        Display name
+        <input type="text" name="label" id="new-brand-label" required placeholder="Pepsi" />
+      </label>
+      <label>
+        URL slug
+        <input type="text" name="slug" id="new-brand-slug" required placeholder="pepsi" pattern="[a-z0-9]+(-[a-z0-9]+)*" />
+      </label>
+      <label class="file-label">
+        Participating SKUs Excel/CSV
+        <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
+      </label>
+      <p class="section-caption">New SKUs appear in simulations after the next Athena refresh. If these SKUs already have order rows, results show immediately.</p>
+
+      <fieldset class="new-brand-rewards" id="new-brand-rewards">
+        <legend>Rewards (at least one)</legend>
+        <div class="new-brand-reward">
+          <label>
+            Reward name
+            <input type="text" name="reward_name" required placeholder="Reward 1" />
+          </label>
+          <label>
+            Point cutoff
+            <input type="number" name="reward_points" min="0" step="500" value="5000" required />
+          </label>
+        </div>
+      </fieldset>
+      <button type="button" class="button secondary" id="new-brand-add-reward">Add another reward</button>
+
+      <label>
+        Palette (optional)
+        <select name="theme">
+          <option value="default">Default teal</option>
+          <option value="coca-cola">Coca-Cola (red/white)</option>
+          <option value="monster">Monster (black + lime)</option>
+          <option value="ferrera">Ferrera/Nerds (pink/purple/blue)</option>
+        </select>
+      </label>
+
+      <div class="actions">
+        <button type="submit" class="button primary">Create brand</button>
+        <button type="button" class="button" id="new-brand-cancel" value="cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    (function () {
+      const dialog = document.getElementById("new-brand-dialog");
+      const openBtn = document.getElementById("new-brand-open");
+      const cancelBtn = document.getElementById("new-brand-cancel");
+      const nameInput = document.getElementById("new-brand-label");
+      const slugInput = document.getElementById("new-brand-slug");
+      const addReward = document.getElementById("new-brand-add-reward");
+      const rewardsWrap = document.getElementById("new-brand-rewards");
+      let slugEdited = false;
+
+      openBtn && openBtn.addEventListener("click", function () { dialog.showModal(); });
+      cancelBtn && cancelBtn.addEventListener("click", function () { dialog.close(); });
+      slugInput && slugInput.addEventListener("input", function () { slugEdited = true; });
+      nameInput && nameInput.addEventListener("input", function () {
+        if (slugEdited || !slugInput) return;
+        slugInput.value = nameInput.value.trim().toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      });
+      addReward && addReward.addEventListener("click", function () {
+        const row = rewardsWrap.querySelector(".new-brand-reward");
+        if (!row) return;
+        const clone = row.cloneNode(true);
+        clone.querySelectorAll("input").forEach(function (el) {
+          if (el.type === "number") el.value = "5000";
+          else el.value = "";
+        });
+        rewardsWrap.appendChild(clone);
+      });
+      {% if open_new_brand %}
+      dialog.showModal();
+      {% endif %}
+    })();
+  </script>
 </body>
 </html>
