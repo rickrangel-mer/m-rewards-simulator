@@ -6,12 +6,21 @@ import pandas as pd
 import pytest
 
 from data import (
+    SCHEMA_SQL,
     backfill_windows,
+    ensure_schema,
     fetch_order_data,
     format_month_label,
+    init_schema,
+    load_brand_rewards,
+    load_proposed_points,
+    merge_proposed_points,
+    overlay_proposed_points,
     previous_month_window,
     replace_month_orders,
     replace_month_orders_frame,
+    replace_proposed_points,
+    save_brand_rewards,
 )
 from refresh_orders import refresh_windows, run_refresh
 
@@ -255,3 +264,144 @@ def test_run_refresh_subsequent_month_only_pulls_previous(monkeypatch):
 
     assert calls == [(date(2026, 8, 1), date(2026, 9, 1))]
     assert result["last_refreshed_month"] == "2026-08"
+
+
+def test_schema_sql_includes_proposed_and_rewards_tables():
+    assert "brand_proposed_points" in SCHEMA_SQL
+    assert "brand_rewards" in SCHEMA_SQL
+    assert "PRIMARY KEY (brand, sku)" in SCHEMA_SQL
+    assert "PRIMARY KEY (brand, sort)" in SCHEMA_SQL
+
+
+def test_init_schema_executes_new_tables():
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    init_schema(conn)
+
+    sql_ran = "\n".join(call.args[0] for call in cursor.execute.call_args_list)
+    assert "CREATE TABLE IF NOT EXISTS brand_proposed_points" in sql_ran
+    assert "CREATE TABLE IF NOT EXISTS brand_rewards" in sql_ran
+    conn.commit.assert_called()
+
+
+def test_ensure_schema_skips_without_database_url():
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("data.get_connection") as get_connection:
+            assert ensure_schema() is False
+            get_connection.assert_not_called()
+
+
+def test_ensure_schema_inits_when_url_present():
+    conn = MagicMock()
+    with patch("data.get_database_url", return_value="postgresql://example"), \
+         patch("data.get_connection", return_value=conn), \
+         patch("data.init_schema") as init:
+        assert ensure_schema() is True
+        init.assert_called_once_with(conn)
+        conn.close.assert_called_once()
+
+
+def test_overlay_proposed_points_keeps_omitted_and_drops_zero():
+    existing = {"SKU-A": 100, "SKU-B": 200, "SKU-C": 300}
+    patch = {"SKU-A": 150, "SKU-C": 0, "SKU-D": 90}
+    assert overlay_proposed_points(existing, patch) == {
+        "SKU-A": 150,
+        "SKU-B": 200,
+        "SKU-D": 90,
+    }
+
+
+def test_overlay_proposed_points_invalid_values_remove_override():
+    existing = {"SKU-A": 100}
+    assert overlay_proposed_points(existing, {"SKU-A": "nope"}) == {}
+
+
+def test_load_proposed_points_skips_non_positive():
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    cursor.fetchall.return_value = [("SKU-A", 100), ("SKU-B", 0)]
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    result = load_proposed_points("monster", conn=conn)
+
+    assert result == {"SKU-A": 100}
+    sql, params = cursor.execute.call_args[0]
+    assert "FROM brand_proposed_points" in sql
+    assert params == ("monster",)
+
+
+def test_replace_proposed_points_deletes_then_inserts():
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch("psycopg2.extras.execute_values") as execute_values:
+        replace_proposed_points("coca-cola", {"SKU-A": 10, "SKU-B": 0}, conn=conn)
+
+    delete_sql, delete_params = cursor.execute.call_args[0]
+    assert "DELETE FROM brand_proposed_points" in delete_sql
+    assert delete_params == ("coca-cola",)
+    execute_values.assert_called_once()
+    rows = execute_values.call_args[0][2]
+    assert rows == [("coca-cola", "SKU-A", 10)]
+    conn.commit.assert_called()
+
+
+def test_merge_proposed_points_overlays_then_writes():
+    conn = MagicMock()
+    with patch("data.load_proposed_points", return_value={"SKU-A": 100, "SKU-B": 200}) as load, \
+         patch("data.replace_proposed_points") as replace:
+        merged = merge_proposed_points(
+            "ferrera",
+            {"SKU-A": 150, "SKU-C": 0},
+            conn=conn,
+        )
+
+    assert merged == {"SKU-A": 150, "SKU-B": 200}
+    load.assert_called_once_with("ferrera", conn=conn)
+    replace.assert_called_once_with("ferrera", {"SKU-A": 150, "SKU-B": 200}, conn=conn)
+
+
+def test_load_brand_rewards_orders_by_sort():
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    cursor.fetchall.return_value = [("First", 5000), ("Second", 9000)]
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    result = load_brand_rewards("coca-cola", conn=conn)
+
+    assert result == [("First", 5000), ("Second", 9000)]
+    sql, params = cursor.execute.call_args[0]
+    assert "ORDER BY sort" in sql
+    assert params == ("coca-cola",)
+
+
+def test_save_brand_rewards_replaces_rows():
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch("psycopg2.extras.execute_values") as execute_values:
+        save_brand_rewards("monster", [("Reward 1", 6500), ("Reward 2", 10000)], conn=conn)
+
+    delete_sql, delete_params = cursor.execute.call_args[0]
+    assert "DELETE FROM brand_rewards" in delete_sql
+    assert delete_params == ("monster",)
+    rows = execute_values.call_args[0][2]
+    assert rows == [
+        ("monster", 0, "Reward 1", 6500),
+        ("monster", 1, "Reward 2", 10000),
+    ]
+    conn.commit.assert_called()
