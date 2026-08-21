@@ -11,7 +11,7 @@
   <div class="section-header">
     <div>
       <h2>Simulation Results</h2>
-      <p class="section-caption">Using {{ selected_month_label }} ordering data</p>
+      <p class="section-caption">Using {{ selected_month_label }} ordering data. Total Stores and % of stores are stores that ordered this brand this month.</p>
     </div>
     <form method="get" action="/brands/{{ brand }}" class="month-picker" id="month-form">
       {% if search %}
@@ -49,6 +49,7 @@
   </div>
 
   <h3>Points Distribution</h3>
+  <p class="section-caption">Chart clips the top 1% of points for binning only. Total Stores, averages, and reward counts use every store.</p>
   {% set max_count = results.histogram | map(attribute='count') | max if results.histogram else 1 %}
   <div class="histogram">
     {% for bin in results.histogram %}

@@ -57,6 +57,7 @@ def available_months(raw: pd.DataFrame, skus: set | None = None) -> list[str]:
 
 
 def get_month_orders(raw: pd.DataFrame, year: int, month: int, skus: set) -> pd.DataFrame:
+    """Brand SKU rows for one calendar month. Stores with no such rows are absent."""
     start = pd.Timestamp(year, month, 1)
     if month == 12:
         end = pd.Timestamp(year + 1, 1, 1)
@@ -68,6 +69,7 @@ def get_month_orders(raw: pd.DataFrame, year: int, month: int, skus: set) -> pd.
 
 
 def simulate(month_orders, sku_to_title, points_lookup, reward_thresholds) -> pd.DataFrame:
+    """Score each store that appears in month_orders. One unit is enough; no min qty."""
     df = month_orders.copy()
     df["product_title"] = df["sku"].map(sku_to_title)
     df["points_per_unit"] = df["product_title"].map(points_lookup).fillna(0)
@@ -127,6 +129,11 @@ def build_points_lookup(skus_df: pd.DataFrame, proposed: dict[str, int]) -> dict
 
 
 def summarize_results(store_points: pd.DataFrame, reward_thresholds: dict) -> dict:
+    """Metrics and reward % use the full store_points population (current-month orderers).
+
+    The histogram clips the 99th percentile for chart bins only. The store
+    table is the top 500 by points; totals are not clipped or capped.
+    """
     total_stores = len(store_points)
     if total_stores == 0:
         return {

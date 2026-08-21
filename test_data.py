@@ -179,6 +179,10 @@ def test_fetch_order_data_builds_exclusive_month_query(monkeypatch):
     assert "'O''Brien'" in captured["query"]
     assert ">= TIMESTAMP" in captured["query"]
     assert "<  TIMESTAMP" in captured["query"] or "< TIMESTAMP" in captured["query"]
+    assert "SUM(li.initial_quantity)" in captured["query"]
+    assert "HAVING" not in captured["query"].upper()
+    assert "cancel" not in captured["query"].lower()
+    assert "GROUP BY o.store_id, li.sku, DATE(li.order_item_created_at)" in captured["query"]
     assert list(df["sku"]) == ["SKU-1"]
     assert pd.api.types.is_datetime64_any_dtype(df["order_date"])
 

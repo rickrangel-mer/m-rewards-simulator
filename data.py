@@ -404,7 +404,12 @@ def empty_orders_frame() -> pd.DataFrame:
 
 
 def fetch_order_data(sku_list, start: date, end: date, connect_fn=None) -> pd.DataFrame:
-    """Query Athena for store/SKU quantities in [start, end)."""
+    """Query Athena for store/SKU quantities in [start, end).
+
+    Inclusion: any store that ordered a catalog SKU in the window, with no
+    min-quantity HAVING filter, cancelled-order predicate, or store-status
+    filter. Quantity is SUM(li.initial_quantity), not net of returns.
+    """
     if not sku_list:
         return empty_orders_frame()
 

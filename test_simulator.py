@@ -62,3 +62,64 @@ def test_summarize_results_empty():
     summary = summarize_results(empty, {"Reward 1": 100})
     assert summary["total_stores"] == 0
     assert summary["rewards"] == []
+
+
+def test_get_month_orders_keeps_qty_one_and_drops_other_month_or_sku():
+    raw = pd.DataFrame({
+        "store_id": ["S1", "S2", "S3", "S4"],
+        "sku": ["A", "A", "B", "A"],
+        "order_date": pd.to_datetime(["2026-08-01", "2026-07-15", "2026-08-10", "2026-08-20"]),
+        "total_quantity": [1, 50, 9, 3],
+    })
+    result = get_month_orders(raw, 2026, 8, {"A"})
+    assert set(result["store_id"]) == {"S1", "S4"}
+    assert result.loc[result["store_id"] == "S1", "total_quantity"].iloc[0] == 1
+
+
+def test_simulate_omits_stores_with_no_brand_rows_this_month():
+    orders = pd.DataFrame({
+        "store_id": ["S1"],
+        "sku": ["A"],
+        "total_quantity": [1],
+        "product_title": ["Prod A"],
+    })
+    result = simulate(orders, {"A": "Prod A"}, {"Prod A": 10}, {"Reward 1": 100})
+    assert list(result["store_id"]) == ["S1"]
+    assert result.iloc[0]["total_points"] == 10
+    assert bool(result.iloc[0]["Reward 1"]) is False
+
+
+def test_summarize_results_histogram_clip_does_not_change_totals():
+    n = 100
+    points = list(range(n - 1)) + [1_000_000]
+    store_points = pd.DataFrame({
+        "store_id": [f"S{i}" for i in range(n)],
+        "total_points": points,
+        "total_units": [1] * n,
+        "distinct_skus": [1] * n,
+        "Reward 1": [p >= 50 for p in points],
+    })
+    summary = summarize_results(store_points, {"Reward 1": 50})
+    assert summary["total_stores"] == n
+    assert summary["max_points"] == 1_000_000
+    assert summary["avg_points"] == sum(points) / n
+    assert summary["rewards"][0]["count"] == sum(p >= 50 for p in points)
+    hist_high = max(bin["mid"] for bin in summary["histogram"])
+    assert hist_high < 1_000_000
+
+
+def test_summarize_results_detail_caps_at_500_metrics_use_full_population():
+    n = 501
+    store_points = pd.DataFrame({
+        "store_id": [f"S{i}" for i in range(n)],
+        "total_points": list(range(n)),
+        "total_units": [1] * n,
+        "distinct_skus": [1] * n,
+        "Reward 1": [True] * n,
+    })
+    summary = summarize_results(store_points, {"Reward 1": 0})
+    assert summary["total_stores"] == 501
+    assert len(summary["stores"]) == 500
+    assert summary["rewards"][0]["count"] == 501
+    assert summary["rewards"][0]["pct"] == 100.0
+    assert summary["stores"][0]["store_id"] == "S500"

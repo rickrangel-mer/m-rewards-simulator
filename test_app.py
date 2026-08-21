@@ -155,6 +155,8 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert 'method="get"' in results
     assert "Simulation month" in results
     assert "Total Stores" in results
+    assert "stores that ordered this brand this month" in results
+    assert "Chart clips the top 1%" in results
     assert "Stores earning each reward" in results
     assert "Points Distribution" in results
     assert "Store-level detail" in results
@@ -207,6 +209,8 @@ def test_all_brands_render_sectioned_pages():
             assert "Update Simulation" in html
             assert "Download catalog Excel" in html
             assert 'id="catalog-upload"' in html
+            assert f'data-brand="{brand}"' in html
+            assert "stores that ordered this brand this month" in html
 
 
 def test_month_query_keeps_results_in_sync():
@@ -565,6 +569,7 @@ def test_catalog_preview_shows_add_update_remove(persist_store):
     assert "Merge into catalog" in html
     assert "Replace catalog" in html
     assert 'id="catalog-confirm"' in html
+    assert 'data-brand="coca-cola"' in html
 
 
 def test_catalog_merge_keeps_omitted_skus(persist_store):
@@ -667,3 +672,19 @@ def test_catalog_upload_rejects_points_only_file(persist_store):
         follow = client.get(response.headers["location"])
     assert b"product_title" in follow.content
     assert persist_store.catalogs.get("coca-cola") in (None, [])
+
+
+def test_brand_theme_css_uses_variables_and_palettes():
+    client = TestClient(webapp.app)
+    css = client.get("/static/styles.css").text
+    assert 'body[data-brand="coca-cola"]' in css
+    assert "#c8102e" in css
+    assert 'body[data-brand="monster"]' in css
+    assert "#6abf4b" in css
+    assert 'body[data-brand="ferrera"]' in css
+    assert "#8a5a2b" in css
+    assert "#3d8f7f" not in css
+    assert "rgba(15, 106, 90" not in css
+    assert ".bar-fill" in css
+    assert "background: var(--accent)" in css
+
