@@ -1,6 +1,6 @@
 # M-Rewards Simulator
 
-FastAPI + Jinja2 web app that simulates M-Rewards outcomes from store order history. Brand SKU lists and points live in Excel workbooks. Order snapshots live in **Railway Postgres**, refreshed monthly from AWS Athena.
+FastAPI + Jinja2 web app that simulates M-Rewards outcomes from store order history. Brand SKU catalogs (which SKUs exist, titles, current points) live in **Railway Postgres**, seeded once from the git Excel workbooks. Order snapshots also live in Postgres, refreshed monthly from AWS Athena.
 
 The web app never queries Athena. Athena is a pull source used only by the monthly job.
 
@@ -77,8 +77,10 @@ After the first successful deploy, trigger the cron service once (or run with `R
 
 ## Excel config
 
-These workbooks stay in the repo. They are brand SKU/points config, not order history.
+The three git workbooks seed Postgres **once** (empty `brand_skus` for that brand). After that, the website catalog is the source of truth for the web app and the Athena refresh SKU list.
 
 - `M-rewards-cocacola.xlsx`
 - `M-rewards-monster.xlsx`
 - `M-rewards-ferrera.xlsx`
+
+Download the current catalog as Excel from a brand page, edit `sku`, `product_title`, `current_points` (optional: `size`, `brand`, `category`), then upload and preview. **Merge** keeps SKUs that are not in the file. **Replace** makes the file the full list. Do not treat the git workbooks as live config.
