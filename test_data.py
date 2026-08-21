@@ -1,7 +1,9 @@
 from datetime import date
+import os
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 from data import (
     backfill_windows,
@@ -44,6 +46,30 @@ def test_load_sku_mapping_reads_current_cocacola_workbook():
     assert not mapping.empty
     assert {"sku", "product_title", "category", "rewards_match", "points"} <= set(mapping.columns)
     assert mapping["sku"].notna().all()
+
+
+def test_get_database_url_from_pg_vars():
+    from data import get_database_url
+
+    env = {
+        "PGHOST": "postgres.railway.internal",
+        "PGPORT": "5432",
+        "PGUSER": "postgres",
+        "PGPASSWORD": "secret",
+        "PGDATABASE": "railway",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        url = get_database_url()
+    assert "postgres.railway.internal" in url
+    assert "postgresql://" in url
+
+
+def test_get_database_url_rejects_unresolved_reference():
+    from data import get_database_url
+
+    with patch.dict(os.environ, {"DATABASE_URL": "${{Postgres.DATABASE_URL}}"}, clear=True):
+        with pytest.raises(RuntimeError, match="Could not build"):
+            get_database_url()
 
 
 def test_safe_int_handles_nan_and_blank():
