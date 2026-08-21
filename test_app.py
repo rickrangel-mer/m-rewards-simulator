@@ -758,7 +758,6 @@ def _live_catalog(persist_store, orders=None):
 def _create_brand_form(**overrides):
     data = {
         "label": "Pepsi",
-        "slug": "pepsi",
         "theme": "default",
         "reward_name": "Cooler",
         "reward_points": "5000",
@@ -780,9 +779,11 @@ def test_new_brand_modal_lists_requirements():
     assert 'id="new-brand-dialog"' in html
     assert "New brand" in html
     assert "Display name" in html
-    assert "URL slug" in html
+    assert "URL slug" not in html
     assert "Participating SKUs Excel/CSV" in html
     assert "sku, product_title, current_points" in html
+    assert "Download template" in html
+    assert 'href="/catalog-template.xlsx"' in html
     assert "At least one reward" in html
     assert "next Athena refresh" in html
     assert 'action="/brands/create"' in html
@@ -828,7 +829,7 @@ def test_create_brand_with_new_skus_renders_before_refresh(persist_store):
         client = TestClient(webapp.app)
         response = client.post(
             "/brands/create",
-            data=_create_brand_form(label="Zevia", slug="zevia", theme="monster"),
+            data=_create_brand_form(label="Zevia", theme="monster"),
             files=_create_catalog_file(csv),
             follow_redirects=False,
         )
@@ -889,7 +890,7 @@ def test_create_brand_unparseable_file_does_not_write(persist_store):
     assert follow.text  # flash present on the page
 
 
-def test_create_brand_duplicate_slug_does_not_overwrite(persist_store):
+def test_create_brand_duplicate_name_does_not_overwrite(persist_store):
     persist_store.catalogs["coca-cola"] = [
         {"sku": "SKU-A", "product_title": "Keep Me", "current_points": 50},
     ]
@@ -897,7 +898,7 @@ def test_create_brand_duplicate_slug_does_not_overwrite(persist_store):
     client = TestClient(webapp.app)
     response = client.post(
         "/brands/create",
-        data=_create_brand_form(label="Clone", slug="coca-cola"),
+        data=_create_brand_form(label="Coca-Cola"),
         files=_create_catalog_file(),
         follow_redirects=False,
     )
@@ -909,6 +910,38 @@ def test_create_brand_duplicate_slug_does_not_overwrite(persist_store):
     with orders_patch, skus_patch:
         follow = client.get(response.headers["location"])
     assert "already exists" in follow.text
+
+
+def test_create_brand_assigns_slug_from_display_name(persist_store):
+    orders_patch, skus_patch = _live_catalog(persist_store)
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/create",
+            data=_create_brand_form(label="Diet Pepsi", slug="ignored-spoof"),
+            files=_create_catalog_file(),
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/brands/diet-pepsi"
+        page = client.get("/brands/diet-pepsi")
+    assert "diet-pepsi" in persist_store.brands
+    assert "ignored-spoof" not in persist_store.brands
+    assert page.status_code == 200
+    assert "Diet Pepsi" in page.text
+
+
+def test_download_catalog_template():
+    client = TestClient(webapp.app)
+    response = client.get("/catalog-template.xlsx")
+    assert response.status_code == 200
+    assert "spreadsheetml" in response.headers["content-type"]
+    df = pd.read_excel(BytesIO(response.content))
+    assert list(df.columns)[:3] == ["sku", "product_title", "current_points"]
+    assert "size" in df.columns
+    assert "brand" in df.columns
+    assert "category" in df.columns
+    assert len(df) == 0
 
 
 def test_create_brand_no_reward_does_not_write(persist_store):
