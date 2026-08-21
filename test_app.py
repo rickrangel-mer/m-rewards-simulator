@@ -681,11 +681,17 @@ def test_brand_theme_css_uses_variables_and_palettes():
     assert "#f40009" in css
     assert 'body[data-brand="monster"]' in css
     assert "#8dc63f" in css
+    assert "#111111" in css
     assert 'body[data-brand="ferrera"]' in css
     assert "#e4007c" in css
-    assert "--on-accent" in css
+    assert "#5c2d91" in css
+    assert "#1e3fa8" in css
+    assert "--cta" in css
+    assert "--bar" in css
     assert "#3d8f7f" not in css
     assert "rgba(15, 106, 90" not in css
+    assert "circle at top left" not in css
     assert ".bar-fill" in css
-    assert "background: var(--accent)" in css
+    assert "background: var(--bar)" in css
+    assert "background: var(--bg)" in css
 
