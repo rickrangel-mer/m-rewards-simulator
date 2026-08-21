@@ -1,10 +1,23 @@
-# Handoff: Persist proposed points and rewards (P0)
+# Handoff: Store inclusion (P2) and per-brand color (P3)
 
 **Owner:** Rick (PM)  
 **Repo:** `rickrangel-mer/m-rewards-simulator`  
-**Branch baseline:** `main` (FastAPI site live; page sectioning in PR #3)  
-**Next focus:** Save SKU proposed points, reward names, and reward thresholds in Railway Postgres so they survive refresh and are shared with a coworker  
-**Product list:** [`backlog.md`](backlog.md) (this is P0 only)
+**Product list:** [`backlog.md`](backlog.md)  
+**This brief:** P2 and P3 only. Do not do P4. Do not reintroduce Streamlit. Do not change `start.sh` web vs `SERVICE_ROLE=refresh`.
+
+---
+
+## Baseline (read this before branching)
+
+| Item | Status |
+|---|---|
+| **P0** proposed points + rewards in Postgres | **On `main`** — [PR #6](https://github.com/rickrangel-mer/m-rewards-simulator/pull/6) |
+| **P1** web-managed SKU catalogs | **Merged, but not on `main`.** [PR #7](https://github.com/rickrangel-mer/m-rewards-simulator/pull/7) targeted `cursor/persist-proposed-rewards-1268` (P0’s branch). `#6` was squash-merged to `main`, so that P0 branch is **not** an ancestor of `main`. |
+| **P2 / P3** | This handoff |
+
+**Start from `origin/main`.** Before depending on catalog tables (`brand_skus`, catalog upload/download), **land P1 on `main` first**: rebase `origin/cursor/web-managed-catalogs-1268` onto `main` (do not merge the old P0 commit `cd63c58` — it duplicates squash `#6`) and open a PR. If P1 is already on `main` when you start, skip that.
+
+After P1 is on `main`: SKU lists and `current_points` live in Postgres (`brand_skus`), seeded once from the git xlsx files. Proposed points / rewards stay in `brand_proposed_points` / `brand_rewards`. Excel is bulk-edit format, not live config.
 
 ---
 
@@ -12,179 +25,146 @@
 
 Internal simulator for Mercaso M-Rewards. For a brand (Coca-Cola / Monster / Ferrera), pick a month of historical orders, set points per SKU and reward thresholds, and see how many stores would earn each reward.
 
-**Data today:**
+**Data path:**
 - Order snapshots in Railway Postgres (`orders`, `refresh_state`)
 - Monthly Athena pull via cron (`SERVICE_ROLE=refresh` → `refresh_orders.py`)
-- Brand SKU **lists** and **current** points in Excel workbooks in the repo
-- Proposed points + reward edits in a **12-hour browser cookie** (`SessionMiddleware` in [`app.py`](app.py), `max_age=60 * 60 * 12`)
 - Web app never talks to Athena
+- FastAPI + Jinja2; sectioned brand page (month+results, SKU tools, reward thresholds)
 
 ---
 
-## The problem
+## P2 — Review store-inclusion logic
 
-A coworker opens a brand page, types proposed points / reward names / cutoffs, and hits Update Simulation. That only lives in **their** session cookie. After ~12 hours, a new browser, a Railway web redeploy that drops cookies, or a teammate opening the same URL, the site falls back to Excel `current_points` and `BRAND_DEFAULTS` rewards. They have to re-enter everything.
+Rick’s concern: stores without “enough” purchases may be dropped, so reward “% of stores” and Total Stores look too optimistic or too small.
 
-Import CSV/Excel overlays have the same fate: session-only.
+### Investigate first. Change the query only if the product rule is wrong.
+
+There is **no** `HAVING` / min-quantity filter today. What *does* drop stores:
+
+1. **Athena** [`fetch_order_data()`](data.py) — only rows for SKUs on the brand catalog (`li.sku IN (...)`). `SUM(li.initial_quantity)` as `total_quantity`. Latest `dt` partition on both line-item and order tables. **No** cancelled-order predicate, **no** net-quantity, **no** store-status filter.
+2. **Simulator** [`get_month_orders()`](simulator.py) — selected calendar month, brand SKUs only.
+3. **[`simulate()`](simulator.py)** — `groupby store_id` on those rows. A store is scored iff it ordered **≥1** of those SKUs in the selected month.
+4. **“% of stores” / Total Stores** — that population, **not** all Mercaso stores, **not** “ever ordered this brand.”
+5. **Store-level detail** table — top **500** by points (`summarize_results()`). Metrics and reward counts still use the full population.
+6. **Histogram** — clips the **99th percentile for chart bins only**; averages / max / reward counts are unclipped.
+7. **SKU “store penetration”** column — `nunique(store_id)` over **all months loaded in Postgres**, not the selected month.
+
+`rewards_analysis.py` uses a different cohort idea (rewards SKUs vs all stores in the dump). Do not treat that script as the website rule.
+
+### Product question to answer in the PR
+
+Which denominator does Rick want?
+
+| Option | Meaning |
+|---|---|
+| **A. Current-month orderers of this brand’s SKUs** | What the code does today |
+| **B. Ever-ordered-this-brand** (any month in Postgres) | Stores with 0 points this month still in the % |
+| **C. All Mercaso stores** | Needs a store universe Athena does not currently pull |
+
+Also: is `SUM(li.initial_quantity)` the right qty (vs net, cancelled, returned)?
+
+**If A is correct:** do not change Athena. Optionally add a one-line caption on the results panel so “Total Stores” / “% of stores” is not misread (e.g. “Stores that ordered this brand this month”). Add tests that document the rule (a store with no brand SKUs in the month is absent; histogram clip does not change `total_stores`).
+
+**If B or C or quantity is wrong:** smallest code change that matches the rule. Keep `start.sh` split. SKU list for Athena is Postgres `load_all_skus()` once P1 is on `main` (Excel union only if you are still on pre-P1 `main`).
+
+### P2 tests
+
+- Prefer unit tests on `get_month_orders` / `simulate` / `summarize_results` with small DataFrames. Do **not** add live Athena tests.
+- If you change `fetch_order_data` SQL, extend [`test_fetch_order_data_builds_exclusive_month_query`](test_data.py).
+- `pytest` green. Do not break brand sectioning.
+
+### P2 out of scope
+
+P4, Streamlit, auth, replacing catalogs, per-brand colors (that is P3), rewriting the cron.
 
 ---
 
-## Target (P0 only)
+## P3 — Per-brand ambient color
 
-Postgres is the source of truth for **working edits**:
+One palette today (`--accent: #0f6a5a` in [`static/styles.css`](static/styles.css)). Histogram bars are hardcoded `#3d8f7f`. Coca-Cola / Monster / Ferrera pages should feel different (header, nav pills, buttons, metric cards, histogram) **without** a branding overhaul.
 
-- Per-brand map of `sku → proposed_points`
-- Per-brand list of `(reward_name, threshold_points)` in display order
+**Still blocked on Rick** for final brand examples. Do **not** wait forever: ship the `data-brand` hook and three variable blocks using the **starter** hex below so the pages are distinguishable. Rick can swap values in CSS later.
 
-**Shared across users** (no login, last write wins). Rick and his coworker should see the same numbers after either of them saves.
+Starter (draft — replace if Rick provided swatches in the prompt):
 
-**Still from git Excel (do not move in P0):**
-- Which SKUs exist on the page
-- `current_points` column
-- Extra columns (Monster size, Ferrera brand/category)
-- Athena refresh SKU union (`load_all_skus()`)
+| Brand slug | Accent | Soft / wash | Notes |
+|---|---|---|---|
+| `coca-cola` | `#c8102e` | `#fde8eb` | Coca-Cola red |
+| `monster` | `#6abf4b` | `#e8f6e1` | Energy-drink green on the existing light gray UI |
+| `ferrera` | `#8a5a2b` | `#f4ebe3` | Confection / gold-brown |
 
-Replacing those workbooks with web-managed catalogs is **P1** in [`backlog.md`](backlog.md). Do not do P1 now.
+Keep `--bg`, `--surface`, `--ink`, `--danger` shared unless a swatch says otherwise.
 
----
+### Implementation sketch
 
-## Suggested data model
+1. Set `data-brand="{{ brand }}"` on `<body>` in [`templates/base.html`](templates/base.html) (and catalog preview, which extends base). `brand_page_context` already passes `brand`.
+2. In CSS: `:root` stays the current teal (home redirect is Coca-Cola; unknown/error pages can keep default). Then:
 
-Extend [`SCHEMA_SQL`](data.py) / `init_schema()` (today it only creates `orders` and `refresh_state`):
-
-```sql
-CREATE TABLE IF NOT EXISTS brand_proposed_points (
-    brand      text        NOT NULL,
-    sku        text        NOT NULL,
-    points     int         NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (brand, sku)
-);
-
-CREATE TABLE IF NOT EXISTS brand_rewards (
-    brand      text        NOT NULL,
-    sort       int         NOT NULL,
-    name       text        NOT NULL,
-    points     int         NOT NULL,
-    PRIMARY KEY (brand, sort)
-);
+```css
+body[data-brand="coca-cola"] { --accent: #c8102e; --accent-soft: #fde8eb; }
+body[data-brand="monster"] { ... }
+body[data-brand="ferrera"] { ... }
 ```
 
-Equivalent shape is fine. Keep it boring.
+3. Point hardcoded teal at variables: `.bar-fill`, `.brand-nav a.active` border, `body` radial-gradient (use `color-mix` or a `--accent-wash` variable). Do not leave `#3d8f7f` / `#b7ddd3` / `rgba(15, 106, 90, …)` as the only brand look.
+4. Keep layout and sectioning. No new screens. New brands (P4) should pick or inherit a theme later — optional `theme` field is **not** required now.
 
-**Empty proposed row for a SKU** → simulation uses Excel `current_points` (`build_points_lookup()` already treats proposed `> 0` as override).
+### P3 tests
 
-**No reward rows for a brand** → keep serving `BRAND_DEFAULTS[brand]["rewards"]` until someone adds/removes/edits rewards, then persist the full list.
+- GET each of `coca-cola`, `monster`, `ferrera` → `data-brand="<slug>"` on the body.
+- Sectioning tests still pass.
+- Do not require visual snapshots.
 
----
+### P3 out of scope
 
-## Critical: merge, do not replace from the HTML form
-
-The SKU table can be **filtered by search**. POST `/brands/{brand}/simulate` only includes `sku` / `proposed_points` for **visible rows**. Today `parse_proposed_form()` + `set_proposed()` **replace the entire session map**, so “search then Update Simulation” can wipe proposed points for SKUs not on screen.
-
-When you persist:
-
-- **Proposed points:** treat the form (and bulk apply, and import) as a **patch**. Load existing Postgres map, overlay posted SKUs, write back. SKUs omitted from the form must keep their stored points.
-- **Rewards:** the form posts every reward card (not filtered). Full replace of that brand’s reward rows is OK.
-
-`parse_proposed_form()` currently **drops points ≤ 0**. Keep that: storing `0` should remove the override so Excel current points apply again. Merge must delete that SKU’s row (or store 0 and ignore it in lookup — deleting is cleaner).
+Custom brand-picker UI, uploading logos, dark mode, P4 new-brand flow.
 
 ---
 
-## Wiring (keep UX)
+## Shared constraints
 
-Swap session get/set in [`app.py`](app.py) (`get_proposed` / `set_proposed` / `get_rewards` / `set_rewards`) to Postgres. Keep **flash** in the session cookie.
-
-Call sites that must write through to Postgres:
-
-| Action | Route |
-|---|---|
-| Update Simulation | POST `/brands/{brand}/simulate` `action=simulate` |
-| Bulk apply | same, `action=bulk_apply` |
-| Add / remove reward | same, `add_reward` / `remove_reward_*` |
-| Import proposed points | POST `/brands/{brand}/import` |
-| Page load / export | GET `/brands/{brand}` and `/export` must **read** Postgres |
-
-No new screens required. Optional one-line caption (“Saved for everyone”) is nice, not required.
-
-Sectioned layout in [`templates/brand.html`](templates/brand.html) stays as-is (month with results; SKU tools with editor; reward controls with thresholds).
+- FastAPI + Jinja2 only.
+- Flash stays on the session cookie; proposed points / rewards / catalogs stay in Postgres (P0/P1).
+- `pytest` must pass without a real Railway DB or Athena.
+- Smoke all three brand keys.
+- Do not edit git Excel workbooks as live config.
 
 ---
 
-## Schema init on the **web** service
+## Suggested order
 
-`init_schema()` runs today only inside [`refresh_orders.py`](refresh_orders.py) (cron). The web process may boot for weeks without a refresh.
-
-**The FastAPI app must create the new tables itself** (startup or first request), using the same `DATABASE_URL` it already uses for `orders`. Do not wait for cron. Do not change `start.sh` web vs `SERVICE_ROLE=refresh` split.
-
----
-
-## Tests
-
-Existing [`test_app.py`](test_app.py) uses `TestClient` session cookies and mocks `load_orders_or_error` / `load_brand_skus`. After this change, persist must not require a real Railway DB in unit tests.
-
-- Fake/in-memory store behind `get_proposed`/`set_proposed`/`get_rewards`/`set_rewards`, **or** patch the new data-layer functions.
-- Assert: POST simulate → new TestClient (no cookies) → GET still shows saved proposed points and reward names.
-- Assert: search-filtered POST does **not** delete proposed points for SKUs not in the form.
-- Assert: import still merges; add/remove reward still round-trips.
-- Smoke: all three brand keys (`coca-cola`, `monster`, `ferrera`).
-- Run `pytest`. Do not add Athena/Postgres/cron tests unless you touch those paths.
-
----
-
-## Out of scope
-
-- Replacing git Excel workbooks / unifying loaders (P1)
-- Athena query / store-inclusion rules (P2)
-- Per-brand colors (P3)
-- “Create a new brand” UI (P4)
-- Streamlit
-- Auth / per-user sandboxes (shared last-write-wins is the product)
-- Changing `start.sh` roles or the Athena cron
+1. Land P1 on `main` if it is not there (rebase catalog branch onto `main`, PR, merge).
+2. **P2:** document current inclusion in the PR; change Athena/simulator only if the product rule is not A.
+3. **P3:** `data-brand` + CSS variables; starter palettes unless Rick supplied hex.
+4. Run `pytest`, commit, push, open a PR (separate PRs for P2 vs P3 is fine; one PR is fine if both are small).
 
 ---
 
 ## Acceptance
 
-1. Edit proposed points, click Update Simulation, hard-refresh or open another browser: values still there.
-2. Same for reward names, thresholds, add reward, remove reward.
-3. Import CSV/Excel overlay persists the same way.
-4. Coworker on another machine sees those values (shared Postgres, not a cookie).
-5. Excel still defines the SKU list and current-points column.
-6. Search + save does not wipe hidden SKUs.
-7. `pytest` green. Brand pages still sectioned. Railway web redeploy picks up schema + code; cron unchanged.
+**P2**
+1. PR states the denominator in one sentence (A, B, or C) and whether `initial_quantity` stays.
+2. If the rule did not change: caption and/or tests make current behavior obvious.
+3. If the rule changed: website numbers match it; Athena cron still exits; `start.sh` roles unchanged.
+4. Histogram still does not silently drop stores from Total Stores / reward counts.
 
----
-
-## Suggested first steps
-
-1. Add tables to `SCHEMA_SQL` and load/save helpers in [`data.py`](data.py).
-2. Ensure `init_schema()` (or equivalent) runs from the web app on startup.
-3. Point `get_proposed` / `set_proposed` / `get_rewards` / `set_rewards` at Postgres; **merge** proposed-point writes.
-4. Leave flash on the session cookie.
-5. Fix/extend [`test_app.py`](test_app.py) with a fake store and a no-cookie round-trip.
-6. Smoke-test all three brands locally if `DATABASE_URL` is available; otherwise tests + a Railway web redeploy after merge.
-
----
-
-## Deploy reminder
-
-After merge: **redeploy the Railway web service** (it has `DATABASE_URL`). Cron/refresh service unchanged unless you edit `start.sh` / env vars (you should not). First web boot must `CREATE TABLE IF NOT EXISTS` the new tables.
+**P3**
+1. Opening Coca-Cola vs Monster vs Ferrera is visibly different (accent, nav, buttons, histogram).
+2. Layout/sectioning unchanged.
+3. `data-brand` present for all three slugs.
 
 ---
 
 ## Paste-ready agent prompt
 
 ```
-Read HANDOFF.md and implement P0 only (persist proposed SKU points, reward names, and thresholds in Railway Postgres).
+Read HANDOFF.md and implement P2 and P3 only.
 
-Baseline: main. Do not do backlog P1–P4. Do not change Athena/Postgres orders pipeline, start.sh web vs refresh split, or reintroduce Streamlit. Do not replace the git Excel workbooks.
+Baseline: origin/main. If P1 catalogs (brand_skus, catalog upload/download) are not on main yet, rebase origin/cursor/web-managed-catalogs-1268 onto main first (PR #7 merged into the P0 branch, not main; do not re-merge squash PR #6). Do not do P4. Do not change start.sh web vs refresh. Do not reintroduce Streamlit.
 
-Today get_proposed/set_proposed and get_rewards/set_rewards in app.py use a 12-hour session cookie. Move working edits to shared Postgres (new tables via SCHEMA_SQL / init_schema). Excel still owns SKU lists and current_points. Empty proposed → Excel current; empty rewards → BRAND_DEFAULTS.
+P2: Rick thinks stores without “enough” purchases may be dropped. Investigate fetch_order_data / get_month_orders / simulate / summarize_results first. There is no HAVING today. Document the denominator (current-month brand orderers vs ever-ordered vs all Mercaso stores) and whether SUM(initial_quantity) is correct. Change Athena/simulator only if the product rule is wrong. If current behavior is correct, add a results caption and unit tests that lock it in. No live Athena tests.
 
-MERGE proposed-point writes: the SKU table can be search-filtered, so a simulate POST is not a full snapshot. Overlay posted SKUs onto the existing map; omitted SKUs keep stored points. Points ≤ 0 remove the override. Rewards may full-replace. Flash can stay on the session.
+P3: Per-brand ambient color via data-brand on <body> and CSS variables. Keep layout/sectioning. Use HANDOFF.md starter hex unless Rick provided swatches. Replace hardcoded histogram/nav teal with variables.
 
-Web app must create the new tables on startup (init_schema currently runs only in refresh_orders.py). Keep UX/sectioning. pytest must pass without real Railway DB (fake store or mocks), including a no-cookie round-trip and a search-filtered POST that does not wipe other SKUs. Smoke all three brands.
-
-Start from main, implement, run pytest, commit/push, open a PR.
+pytest must pass without Railway/Athena. Smoke coca-cola, monster, ferrera. Commit, push, open a PR (one or two PRs).
 ```
