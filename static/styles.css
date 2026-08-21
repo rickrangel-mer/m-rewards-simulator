@@ -5,28 +5,74 @@
   --muted: #5b6b7c;
   --line: #d7dee7;
   --accent: #0f6a5a;
+  --accent-2: #0f6a5a;
   --accent-soft: #e4f3ef;
-  --on-accent: #ffffff;
+  --accent-soft-2: #e4f3ef;
+  --cta: #0f6a5a;
+  --on-cta: #ffffff;
+  --bar: #0f6a5a;
+  --count: #0f6a5a;
+  --topbar-bg: #ffffff;
+  --topbar-ink: #1a2332;
+  --topbar-muted: #5b6b7c;
+  --topbar-line: #d7dee7;
+  --nav-active-bg: #e4f3ef;
+  --nav-active-ink: #0f6a5a;
   --danger: #9b2c2c;
   --shadow: 0 1px 2px rgba(26, 35, 50, 0.06);
   --font: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 
-/* Palettes sampled from the live Mercaso rewards screens (logo tile, card border, progress). */
+/* Coca-Cola: red + white. Monster: black chrome, lime highlights. Ferrera/Nerds: strawberry, grape, logo blue. */
 body[data-brand="coca-cola"] {
   --accent: #f40009;
-  --accent-soft: #fff1f3;
+  --accent-2: #b00007;
+  --accent-soft: #ffffff;
+  --accent-soft-2: #fff5f5;
+  --cta: #f40009;
+  --on-cta: #ffffff;
+  --bar: #f40009;
+  --count: #f40009;
+  --topbar-bg: #ffffff;
+  --topbar-ink: #1a2332;
+  --topbar-muted: #5b6b7c;
+  --topbar-line: #f40009;
+  --nav-active-bg: #fff5f5;
+  --nav-active-ink: #f40009;
 }
 
 body[data-brand="monster"] {
   --accent: #8dc63f;
-  --accent-soft: #eef6d8;
-  --on-accent: #111111;
+  --accent-2: #111111;
+  --accent-soft: #f3f4f3;
+  --accent-soft-2: #ececec;
+  --cta: #111111;
+  --on-cta: #ffffff;
+  --bar: #8dc63f;
+  --count: #111111;
+  --topbar-bg: #111111;
+  --topbar-ink: #ffffff;
+  --topbar-muted: #c8c8c8;
+  --topbar-line: #8dc63f;
+  --nav-active-bg: #8dc63f;
+  --nav-active-ink: #111111;
 }
 
 body[data-brand="ferrera"] {
   --accent: #e4007c;
+  --accent-2: #5c2d91;
   --accent-soft: #fde6f2;
+  --accent-soft-2: #eee6f8;
+  --cta: #5c2d91;
+  --on-cta: #ffffff;
+  --bar: #e4007c;
+  --count: #1e3fa8;
+  --topbar-bg: #ffffff;
+  --topbar-ink: #1a2332;
+  --topbar-muted: #5b6b7c;
+  --topbar-line: #1e3fa8;
+  --nav-active-bg: #fde6f2;
+  --nav-active-ink: #e4007c;
 }
 
 * { box-sizing: border-box; }
@@ -35,9 +81,7 @@ body {
   margin: 0;
   font-family: var(--font);
   color: var(--ink);
-  background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 12%, transparent), transparent 40%),
-    linear-gradient(180deg, #eef2f5 0%, var(--bg) 40%);
+  background: var(--bg);
   min-height: 100vh;
 }
 
@@ -50,9 +94,9 @@ a:hover { text-decoration: underline; }
   align-items: center;
   gap: 1rem;
   padding: 1rem 1.5rem;
-  background: rgba(255, 255, 255, 0.9);
-  border-bottom: 1px solid var(--line);
-  backdrop-filter: blur(8px);
+  background: var(--topbar-bg);
+  color: var(--topbar-ink);
+  border-bottom: 3px solid var(--topbar-line);
   position: sticky;
   top: 0;
   z-index: 10;
@@ -65,14 +109,14 @@ a:hover { text-decoration: underline; }
 }
 
 .brand-mark a {
-  color: var(--ink);
+  color: var(--topbar-ink);
   font-weight: 700;
   font-size: 1.1rem;
   text-decoration: none;
 }
 
 .freshness {
-  color: var(--muted);
+  color: var(--topbar-muted);
   font-size: 0.85rem;
 }
 
@@ -85,16 +129,16 @@ a:hover { text-decoration: underline; }
 .brand-nav a {
   padding: 0.45rem 0.8rem;
   border-radius: 999px;
-  color: var(--muted);
+  color: var(--topbar-muted);
   text-decoration: none;
   border: 1px solid transparent;
 }
 
 .brand-nav a.active,
 .brand-nav a:hover {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 35%, white);
+  background: var(--nav-active-bg);
+  color: var(--nav-active-ink);
+  border-color: color-mix(in srgb, var(--nav-active-ink) 35%, white);
   text-decoration: none;
 }
 
@@ -188,15 +232,15 @@ select {
 
 .button.primary, button.primary,
 button[value="simulate"] {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
+  background: var(--cta);
+  border-color: var(--cta);
+  color: var(--on-cta);
 }
 
 .button.secondary, button.secondary {
   background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, white);
-  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent-2) 40%, white);
+  color: var(--accent-2);
 }
 
 .button.danger, button.danger {
@@ -274,9 +318,14 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   border-color: color-mix(in srgb, var(--accent) 35%, white);
 }
 
+.reward-result:nth-child(even) {
+  background: var(--accent-soft-2);
+  border-color: color-mix(in srgb, var(--accent-2) 35%, white);
+}
+
 .reward-count {
   font-size: 1.35rem;
-  color: var(--accent);
+  color: var(--count);
 }
 
 .histogram {
@@ -300,9 +349,13 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .bar-fill {
   width: 100%;
-  background: var(--accent);
+  background: var(--bar);
   border-radius: 2px 2px 0 0;
   min-height: 1px;
+}
+
+body[data-brand="ferrera"] .bar-fill {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-2) 100%);
 }
 
 .flash {
