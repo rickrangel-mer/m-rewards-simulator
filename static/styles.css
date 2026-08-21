@@ -86,10 +86,39 @@ a:hover { text-decoration: underline; }
   padding: 1.5rem;
 }
 
-h1 { margin: 0 0 0.25rem; font-size: 1.75rem; }
+h1 { margin: 0 0 1.25rem; font-size: 1.75rem; }
 h2 { margin: 0 0 0.75rem; font-size: 1.15rem; }
 h3 { margin: 1.25rem 0 0.75rem; font-size: 1rem; }
 .subtitle { margin: 0 0 1.25rem; color: var(--muted); }
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.section-header h2 { margin: 0; }
+
+.section-caption {
+  margin: 0.3rem 0 0.85rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.section-header .section-caption { margin-bottom: 0; }
+
+.month-picker {
+  display: flex;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.sku-tools { margin-bottom: 0.85rem; }
 
 .panel {
   background: var(--surface);
@@ -275,7 +304,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   border-radius: 8px;
 }
 
-.import-row { margin-bottom: 1rem; }
+.import-row { margin-bottom: 0.85rem; }
 .actions { margin: 1rem 0 2rem; }
 
 details summary {
@@ -288,4 +317,6 @@ details summary {
   .topbar { flex-direction: column; align-items: flex-start; }
   .container { padding: 1rem; }
   input[type="text"], input[type="number"], input[type="search"], select { min-width: 0; width: 100%; }
+  .section-header { flex-direction: column; align-items: stretch; }
+  .month-picker, .month-picker select, .import-row, .sku-tools, .add-reward { width: 100%; }
 }
