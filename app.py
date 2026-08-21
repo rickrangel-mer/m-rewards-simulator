@@ -206,6 +206,63 @@ def health():
     return {"ok": True}
 
 
+def run_brand_simulation(raw, skus_df, month_label: str, proposed: dict, rewards: list[tuple[str, int]]):
+    year, mon = parse_month(month_label)
+    valid = set(skus_df["sku"].astype(str))
+    points_lookup = build_points_lookup(skus_df, proposed)
+    sku_to_title = dict(zip(skus_df["sku"].astype(str), skus_df["product_title"]))
+    month_orders = get_month_orders(raw, year, mon, valid)
+    month_orders = month_orders.merge(skus_df[["sku", "product_title"]], on="sku", how="inner")
+    reward_thresholds = dict(rewards)
+    store_points = simulate(month_orders, sku_to_title, points_lookup, reward_thresholds)
+    return summarize_results(store_points, reward_thresholds)
+
+
+def brand_page_context(
+    request: Request,
+    brand: str,
+    raw,
+    state,
+    selected_month: str,
+    months: list[str],
+    skus_df,
+    proposed: dict,
+    rewards: list[tuple[str, int]],
+    search: str = "",
+    flash=None,
+    bulk_value: int = 100,
+):
+    rows = apply_proposed_to_rows(skus_df, proposed)
+    if search:
+        needle = search.lower()
+        rows = [
+            r for r in rows
+            if needle in r["sku"].lower() or needle in str(r["product_title"]).lower()
+        ]
+
+    freshness = None
+    if state and state.get("last_refreshed_month"):
+        freshness = format_month_label(state["last_refreshed_month"])
+
+    results = run_brand_simulation(raw, skus_df, selected_month, proposed, rewards)
+
+    return {
+        "brand": brand,
+        "brand_label": BRAND_DEFAULTS[brand]["label"],
+        "extra_cols": BRAND_DEFAULTS[brand]["extra_cols"],
+        "months": months,
+        "selected_month": selected_month,
+        "rows": rows,
+        "rewards": rewards,
+        "search": search,
+        "freshness": freshness,
+        "results": results,
+        "flash": flash,
+        "brands": BRAND_DEFAULTS,
+        "bulk_value": bulk_value,
+    }
+
+
 @app.get("/brands/{brand}", response_class=HTMLResponse)
 def brand_page(request: Request, brand: str, month: str | None = None, q: str | None = None):
     brand = brand.lower()
@@ -238,42 +295,26 @@ def brand_page(request: Request, brand: str, month: str | None = None, q: str | 
         )
 
     selected_month = month if month in months else months[-1]
-    year, mon = parse_month(selected_month)
     proposed = get_proposed(request.session, brand)
     rewards = get_rewards(request.session, brand)
-    rows = apply_proposed_to_rows(skus_df, proposed)
-
-    search = (q or "").strip()
-    if search:
-        needle = search.lower()
-        rows = [
-            r for r in rows
-            if needle in r["sku"].lower() or needle in str(r["product_title"]).lower()
-        ]
-
-    freshness = None
-    if state and state.get("last_refreshed_month"):
-        freshness = format_month_label(state["last_refreshed_month"])
-
     flash = request.session.pop("flash", None)
 
     return TEMPLATES.TemplateResponse(
         request,
         "brand.html",
-        {
-            "brand": brand,
-            "brand_label": BRAND_DEFAULTS[brand]["label"],
-            "extra_cols": BRAND_DEFAULTS[brand]["extra_cols"],
-            "months": months,
-            "selected_month": selected_month,
-            "rows": rows,
-            "rewards": rewards,
-            "search": search,
-            "freshness": freshness,
-            "results": None,
-            "flash": flash,
-            "brands": BRAND_DEFAULTS,
-        },
+        brand_page_context(
+            request,
+            brand,
+            raw,
+            state,
+            selected_month,
+            months,
+            skus_df,
+            proposed,
+            rewards,
+            search=(q or "").strip(),
+            flash=flash,
+        ),
     )
 
 
@@ -343,47 +384,23 @@ async def simulate_brand(
     valid = set(skus_df["sku"].astype(str))
     months = available_months(raw, valid)
     selected_month = month if month in months else months[-1]
-    year, mon = parse_month(selected_month)
-
-    points_lookup = build_points_lookup(skus_df, proposed)
-    sku_to_title = dict(zip(skus_df["sku"].astype(str), skus_df["product_title"]))
-    month_orders = get_month_orders(raw, year, mon, valid)
-    month_orders = month_orders.merge(skus_df[["sku", "product_title"]], on="sku", how="inner")
-    reward_thresholds = dict(rewards)
-    store_points = simulate(month_orders, sku_to_title, points_lookup, reward_thresholds)
-    results = summarize_results(store_points, reward_thresholds)
-
-    rows = apply_proposed_to_rows(skus_df, proposed)
-    search = (q or "").strip()
-    if search:
-        needle = search.lower()
-        rows = [
-            r for r in rows
-            if needle in r["sku"].lower() or needle in str(r["product_title"]).lower()
-        ]
-
-    freshness = None
-    if state and state.get("last_refreshed_month"):
-        freshness = format_month_label(state["last_refreshed_month"])
 
     return TEMPLATES.TemplateResponse(
         request,
         "brand.html",
-        {
-            "brand": brand,
-            "brand_label": BRAND_DEFAULTS[brand]["label"],
-            "extra_cols": BRAND_DEFAULTS[brand]["extra_cols"],
-            "months": months,
-            "selected_month": selected_month,
-            "rows": rows,
-            "rewards": rewards,
-            "search": search,
-            "freshness": freshness,
-            "results": results,
-            "flash": None,
-            "brands": BRAND_DEFAULTS,
-            "bulk_value": bulk_value,
-        },
+        brand_page_context(
+            request,
+            brand,
+            raw,
+            state,
+            selected_month,
+            months,
+            skus_df,
+            proposed,
+            rewards,
+            search=(q or "").strip(),
+            bulk_value=bulk_value,
+        ),
     )
 
 

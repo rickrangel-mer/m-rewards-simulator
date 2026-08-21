@@ -4,6 +4,71 @@
 <h1>{{ brand_label }}</h1>
 <p class="subtitle">Simulating with {{ selected_month }} ordering data</p>
 
+{% if results %}
+<section class="panel results">
+  <h2>Simulation Results</h2>
+  <div class="metrics">
+    <div><span class="metric-label">Total Stores</span><strong>{{ "{:,}".format(results.total_stores) }}</strong></div>
+    <div><span class="metric-label">Avg Points/Store</span><strong>{{ "{:,.0f}".format(results.avg_points) }}</strong></div>
+    <div><span class="metric-label">Median Points/Store</span><strong>{{ "{:,.0f}".format(results.median_points) }}</strong></div>
+    <div><span class="metric-label">Max Points/Store</span><strong>{{ "{:,.0f}".format(results.max_points) }}</strong></div>
+  </div>
+
+  <h3>Stores earning each reward</h3>
+  <div class="metrics reward-metrics">
+    {% for r in results.rewards %}
+    <div class="reward-result">
+      <span class="metric-label">{{ r.name }}</span>
+      <strong class="reward-count">{{ "{:,}".format(r.count) }} stores</strong>
+      <span class="metric-sub">{{ r.pct }}% of stores · {{ "{:,}".format(r.threshold) }} pts needed</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  <h3>Points Distribution</h3>
+  {% set max_count = results.histogram | map(attribute='count') | max if results.histogram else 1 %}
+  <div class="histogram">
+    {% for bin in results.histogram %}
+    <div class="bar" title="{{ bin.label }}: {{ bin.count }}">
+      <div class="bar-fill" style="height: {{ (bin.count / max_count * 100) if max_count else 0 }}%"></div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <details>
+    <summary>Store-level detail (top 500)</summary>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Store</th>
+            <th>Points</th>
+            <th>Units</th>
+            <th>SKUs</th>
+            {% for r in results.rewards %}
+            <th>{{ r.name }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in results.stores %}
+          <tr>
+            <td>{{ s.store_id }}</td>
+            <td class="num">{{ "{:,}".format(s.total_points) }}</td>
+            <td class="num">{{ "{:,}".format(s.total_units) }}</td>
+            <td class="num">{{ s.distinct_skus }}</td>
+            {% for r in results.rewards %}
+            <td class="num">{% if s.rewards[r.name] %}Yes{% else %}—{% endif %}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+</section>
+{% endif %}
+
 <form method="post" action="/brands/{{ brand }}/import" enctype="multipart/form-data" class="import-row">
   <input type="hidden" name="month" value="{{ selected_month }}" />
   <label class="file-label">
@@ -19,7 +84,7 @@
     <div class="controls">
       <label>
         Simulation month
-        <select name="month">
+        <select name="month" onchange="this.form.action='/brands/{{ brand }}'; this.form.method='get'; this.form.submit()">
           {% for m in months %}
           <option value="{{ m }}" {% if m == selected_month %}selected{% endif %}>{{ m }}</option>
           {% endfor %}
@@ -100,71 +165,7 @@
   </section>
 
   <div class="actions">
-    <button type="submit" name="action" value="simulate" class="button primary">Run Simulation</button>
+    <button type="submit" name="action" value="simulate" class="button primary">Update Simulation</button>
   </div>
 </form>
-
-{% if results %}
-<section class="panel results">
-  <h2>Simulation Results</h2>
-  <div class="metrics">
-    <div><span class="metric-label">Total Stores</span><strong>{{ "{:,}".format(results.total_stores) }}</strong></div>
-    <div><span class="metric-label">Avg Points/Store</span><strong>{{ "{:,.0f}".format(results.avg_points) }}</strong></div>
-    <div><span class="metric-label">Median Points/Store</span><strong>{{ "{:,.0f}".format(results.median_points) }}</strong></div>
-    <div><span class="metric-label">Max Points/Store</span><strong>{{ "{:,.0f}".format(results.max_points) }}</strong></div>
-  </div>
-
-  <div class="metrics reward-metrics">
-    {% for r in results.rewards %}
-    <div>
-      <span class="metric-label">{{ r.name }}</span>
-      <strong>{{ "{:,}".format(r.count) }} stores ({{ r.pct }}%)</strong>
-      <span class="metric-sub">{{ "{:,}".format(r.threshold) }} pts needed</span>
-    </div>
-    {% endfor %}
-  </div>
-
-  <h3>Points Distribution</h3>
-  {% set max_count = results.histogram | map(attribute='count') | max if results.histogram else 1 %}
-  <div class="histogram">
-    {% for bin in results.histogram %}
-    <div class="bar" title="{{ bin.label }}: {{ bin.count }}">
-      <div class="bar-fill" style="height: {{ (bin.count / max_count * 100) if max_count else 0 }}%"></div>
-    </div>
-    {% endfor %}
-  </div>
-
-  <details open>
-    <summary>Store-level detail (top 500)</summary>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Store</th>
-            <th>Points</th>
-            <th>Units</th>
-            <th>SKUs</th>
-            {% for r in results.rewards %}
-            <th>{{ r.name }}</th>
-            {% endfor %}
-          </tr>
-        </thead>
-        <tbody>
-          {% for s in results.stores %}
-          <tr>
-            <td>{{ s.store_id }}</td>
-            <td class="num">{{ "{:,}".format(s.total_points) }}</td>
-            <td class="num">{{ "{:,}".format(s.total_units) }}</td>
-            <td class="num">{{ s.distinct_skus }}</td>
-            {% for r in results.rewards %}
-            <td class="num">{% if s.rewards[r.name] %}Yes{% else %}—{% endif %}</td>
-            {% endfor %}
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </details>
-</section>
-{% endif %}
 {% endblock %}

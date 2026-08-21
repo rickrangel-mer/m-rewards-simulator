@@ -44,6 +44,9 @@ def test_brand_page_renders_with_mocked_data():
     assert b"Coca-Cola" in response.content
     assert b"Order data through July 2026" in response.content
     assert b"SKU-A" in response.content
+    assert b"Simulation Results" in response.content
+    assert b"Stores earning each reward" in response.content
+    assert b"stores" in response.content
 
 
 def test_simulate_posts_results():
