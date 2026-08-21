@@ -6,24 +6,27 @@
   --line: #d7dee7;
   --accent: #0f6a5a;
   --accent-soft: #e4f3ef;
+  --on-accent: #ffffff;
   --danger: #9b2c2c;
   --shadow: 0 1px 2px rgba(26, 35, 50, 0.06);
   --font: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 
+/* Palettes sampled from the live Mercaso rewards screens (logo tile, card border, progress). */
 body[data-brand="coca-cola"] {
-  --accent: #c8102e;
-  --accent-soft: #fde8eb;
+  --accent: #f40009;
+  --accent-soft: #fff1f3;
 }
 
 body[data-brand="monster"] {
-  --accent: #6abf4b;
-  --accent-soft: #e8f6e1;
+  --accent: #8dc63f;
+  --accent-soft: #eef6d8;
+  --on-accent: #111111;
 }
 
 body[data-brand="ferrera"] {
-  --accent: #8a5a2b;
-  --accent-soft: #f4ebe3;
+  --accent: #e4007c;
+  --accent-soft: #fde6f2;
 }
 
 * { box-sizing: border-box; }
@@ -187,7 +190,7 @@ select {
 button[value="simulate"] {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .button.secondary, button.secondary {
