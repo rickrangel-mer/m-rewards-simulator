@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app as webapp
-from data import overlay_catalog, overlay_proposed_points
+from data import DuplicateBrandError, overlay_catalog, overlay_proposed_points
 from simulator import BRAND_DEFAULTS
 
 
@@ -37,12 +37,17 @@ def _two_skus():
 
 
 class FakeStore:
-    """In-memory stand-in for Railway Postgres proposed-points / rewards / catalog tables."""
+    """In-memory stand-in for Railway Postgres proposed-points / rewards / catalog / brands tables."""
 
     def __init__(self):
         self.proposed: dict[str, dict[str, int]] = {}
         self.rewards: dict[str, list[tuple[str, int]]] = {}
         self.catalogs: dict[str, list[dict]] = {}
+        self.brands: dict[str, dict] = {
+            "coca-cola": {"label": "Coca-Cola", "theme": "coca-cola", "sort": 0},
+            "monster": {"label": "Monster", "theme": "monster", "sort": 1},
+            "ferrera": {"label": "Ferrera", "theme": "ferrera", "sort": 2},
+        }
 
     def load_proposed_points(self, brand: str, conn=None) -> dict[str, int]:
         return dict(self.proposed.get(brand, {}))
@@ -77,6 +82,38 @@ class FakeStore:
         self.replace_catalog_skus(brand, merged)
         return [dict(r) for r in merged]
 
+    def load_brands(self, conn=None) -> list[dict]:
+        rows = [
+            {
+                "slug": slug,
+                "label": meta["label"],
+                "theme": meta.get("theme") or "default",
+                "sort": int(meta.get("sort", 0)),
+            }
+            for slug, meta in self.brands.items()
+        ]
+        return sorted(rows, key=lambda row: (row["sort"], row["slug"]))
+
+    def get_brand(self, slug: str, conn=None) -> dict | None:
+        meta = self.brands.get(slug)
+        if not meta:
+            return None
+        return {
+            "slug": slug,
+            "label": meta["label"],
+            "theme": meta.get("theme") or "default",
+            "sort": int(meta.get("sort", 0)),
+        }
+
+    def create_brand(self, slug: str, label: str, theme: str, records: list[dict], rewards: list[tuple[str, int]], conn=None) -> dict:
+        if slug in self.brands:
+            raise DuplicateBrandError(slug)
+        sort = max((int(meta.get("sort", 0)) for meta in self.brands.values()), default=-1) + 1
+        self.brands[slug] = {"label": label, "theme": theme, "sort": sort}
+        self.replace_catalog_skus(slug, records)
+        self.save_brand_rewards(slug, rewards)
+        return {"slug": slug, "label": label, "theme": theme, "sort": sort}
+
 
 @pytest.fixture
 def persist_store():
@@ -91,7 +128,10 @@ def _patch_persist(persist_store):
          patch.object(webapp, "save_brand_rewards", persist_store.save_brand_rewards), \
          patch.object(webapp, "load_catalog_skus", persist_store.load_catalog_skus), \
          patch.object(webapp, "replace_catalog_skus", persist_store.replace_catalog_skus), \
-         patch.object(webapp, "merge_catalog_skus", persist_store.merge_catalog_skus):
+         patch.object(webapp, "merge_catalog_skus", persist_store.merge_catalog_skus), \
+         patch.object(webapp, "load_brands", persist_store.load_brands), \
+         patch.object(webapp, "get_brand", persist_store.get_brand), \
+         patch.object(webapp, "create_brand", persist_store.create_brand):
         yield persist_store
 
 
@@ -210,7 +250,10 @@ def test_all_brands_render_sectioned_pages():
             assert "Download catalog Excel" in html
             assert 'id="catalog-upload"' in html
             assert f'data-brand="{brand}"' in html
+            assert f'data-theme="{brand}"' in html
             assert "stores that ordered this brand this month" in html
+            assert "New brand" in html
+            assert 'id="new-brand-dialog"' in html
 
 
 def test_month_query_keeps_results_in_sync():
@@ -677,12 +720,12 @@ def test_catalog_upload_rejects_points_only_file(persist_store):
 def test_brand_theme_css_uses_variables_and_palettes():
     client = TestClient(webapp.app)
     css = client.get("/static/styles.css").text
-    assert 'body[data-brand="coca-cola"]' in css
+    assert 'body[data-theme="coca-cola"]' in css
     assert "#f40009" in css
-    assert 'body[data-brand="monster"]' in css
+    assert 'body[data-theme="monster"]' in css
     assert "#8dc63f" in css
     assert "#111111" in css
-    assert 'body[data-brand="ferrera"]' in css
+    assert 'body[data-theme="ferrera"]' in css
     assert "#e4007c" in css
     assert "#5c2d91" in css
     assert "#1e3fa8" in css
@@ -694,4 +737,202 @@ def test_brand_theme_css_uses_variables_and_palettes():
     assert ".bar-fill" in css
     assert "background: var(--bar)" in css
     assert "background: var(--bg)" in css
+
+
+def _live_catalog(persist_store, orders=None):
+    orders = _sample_orders() if orders is None else orders
+    return (
+        patch.object(
+            webapp,
+            "load_orders_or_error",
+            return_value=(orders, {"last_refreshed_month": "2026-07"}, None),
+        ),
+        patch.object(
+            webapp,
+            "load_brand_skus",
+            side_effect=lambda brand: webapp.catalog_frame(persist_store.catalogs.get(brand, [])),
+        ),
+    )
+
+
+def _create_brand_form(**overrides):
+    data = {
+        "label": "Pepsi",
+        "slug": "pepsi",
+        "theme": "default",
+        "reward_name": "Cooler",
+        "reward_points": "5000",
+        "return_to": "/brands/coca-cola",
+    }
+    data.update(overrides)
+    return data
+
+
+def _create_catalog_file(body=b"sku,product_title,current_points\nSKU-A,Pepsi Cola,40\n", name="catalog.csv"):
+    return {"file": (name, BytesIO(body), "text/csv")}
+
+
+def test_new_brand_modal_lists_requirements():
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        html = client.get("/brands/coca-cola").text
+    assert 'id="new-brand-dialog"' in html
+    assert "New brand" in html
+    assert "Display name" in html
+    assert "URL slug" in html
+    assert "Participating SKUs Excel/CSV" in html
+    assert "sku, product_title, current_points" in html
+    assert "At least one reward" in html
+    assert "next Athena refresh" in html
+    assert 'action="/brands/create"' in html
+    assert "Palette (optional)" in html
+
+
+def test_create_brand_persists_and_renders_sectioned_page(persist_store):
+    orders_patch, skus_patch = _live_catalog(persist_store)
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/create",
+            data=_create_brand_form(theme="coca-cola"),
+            files=_create_catalog_file(),
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/brands/pepsi"
+        page = client.get("/brands/pepsi")
+
+    assert persist_store.brands["pepsi"]["label"] == "Pepsi"
+    assert persist_store.brands["pepsi"]["theme"] == "coca-cola"
+    assert persist_store.catalogs["pepsi"][0]["sku"] == "SKU-A"
+    assert persist_store.rewards["pepsi"] == [("Cooler", 5000)]
+    assert page.status_code == 200
+    html = page.text
+    assert "Pepsi" in html
+    assert ">Pepsi</a>" in html
+    assert 'id="simulation-results"' in html
+    assert 'id="sku-points"' in html
+    assert 'id="reward-thresholds"' in html
+    assert "Pepsi Cola" in html
+    assert "Cooler" in html
+    assert 'data-brand="pepsi"' in html
+    assert 'data-theme="coca-cola"' in html
+    assert "Total Stores" in html
+
+
+def test_create_brand_with_new_skus_renders_before_refresh(persist_store):
+    csv = b"sku,product_title,current_points\nSKU-Z,Net New,10\n"
+    orders_patch, skus_patch = _live_catalog(persist_store)
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/create",
+            data=_create_brand_form(label="Zevia", slug="zevia", theme="monster"),
+            files=_create_catalog_file(csv),
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/brands/zevia"
+        page = client.get("/brands/zevia")
+
+    assert page.status_code == 200
+    html = page.text
+    assert "Zevia" in html
+    assert "SKU-Z" in html
+    assert "Net New" in html
+    assert 'id="simulation-results"' in html
+    assert 'id="sku-points"' in html
+    assert 'id="reward-thresholds"' in html
+    assert "No order months yet" in html
+    assert 'data-brand="zevia"' in html
+    assert 'data-theme="monster"' in html
+
+
+def test_create_brand_missing_file_does_not_write(persist_store):
+    before = dict(persist_store.brands)
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/brands/create",
+        data=_create_brand_form(),
+        follow_redirects=False,
+    )
+    assert response.status_code in (303, 400, 422)
+    if response.status_code == 303:
+        assert response.headers["location"] == "/brands/coca-cola"
+        orders_patch, skus_patch = _mocked_client()
+        with orders_patch, skus_patch:
+            follow = client.get(response.headers["location"])
+        assert "participating SKUs" in follow.text.lower() or "Excel or CSV" in follow.text
+    assert persist_store.brands == before
+    assert "pepsi" not in persist_store.catalogs
+    assert "pepsi" not in persist_store.rewards
+
+
+def test_create_brand_unparseable_file_does_not_write(persist_store):
+    before = dict(persist_store.brands)
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/brands/create",
+        data=_create_brand_form(),
+        files={"file": ("catalog.xlsx", BytesIO(b"not-an-excel-file"), "application/octet-stream")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert persist_store.brands == before
+    assert persist_store.catalogs.get("pepsi") in (None, [])
+    assert persist_store.rewards.get("pepsi") in (None, [])
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        follow = client.get(response.headers["location"])
+    assert follow.status_code == 200
+    assert follow.text  # flash present on the page
+
+
+def test_create_brand_duplicate_slug_does_not_overwrite(persist_store):
+    persist_store.catalogs["coca-cola"] = [
+        {"sku": "SKU-A", "product_title": "Keep Me", "current_points": 50},
+    ]
+    persist_store.rewards["coca-cola"] = [("8 Dollar Rebate", 5000)]
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/brands/create",
+        data=_create_brand_form(label="Clone", slug="coca-cola"),
+        files=_create_catalog_file(),
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert persist_store.brands["coca-cola"]["label"] == "Coca-Cola"
+    assert persist_store.catalogs["coca-cola"][0]["product_title"] == "Keep Me"
+    assert persist_store.rewards["coca-cola"] == [("8 Dollar Rebate", 5000)]
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        follow = client.get(response.headers["location"])
+    assert "already exists" in follow.text
+
+
+def test_create_brand_no_reward_does_not_write(persist_store):
+    before = dict(persist_store.brands)
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/brands/create",
+        data=_create_brand_form(reward_name="", reward_points=""),
+        files=_create_catalog_file(),
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert persist_store.brands == before
+    assert "pepsi" not in persist_store.catalogs
+    assert "pepsi" not in persist_store.rewards
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        follow = client.get(response.headers["location"])
+    assert "at least one reward" in follow.text.lower()
+
+
+def test_unknown_brand_is_404(persist_store):
+    client = TestClient(webapp.app)
+    response = client.get("/brands/does-not-exist")
+    assert response.status_code == 404
+    assert b"Unknown brand" in response.content
 

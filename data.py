@@ -66,11 +66,23 @@ CREATE TABLE IF NOT EXISTS brand_skus (
     updated_at      timestamptz NOT NULL DEFAULT NOW(),
     PRIMARY KEY (brand, sku)
 );
+
+CREATE TABLE IF NOT EXISTS brands (
+    slug       text        PRIMARY KEY,
+    label      text        NOT NULL,
+    theme      text        NOT NULL DEFAULT 'default',
+    sort       int         NOT NULL DEFAULT 0
+);
 """
 
 CATALOG_BRANDS = ("coca-cola", "monster", "ferrera")
 CATALOG_EXTRA_COLS = ("size", "brand", "category")
 CATALOG_CORE_COLS = ("sku", "product_title", "current_points")
+PALETTE_THEMES = ("coca-cola", "monster", "ferrera", "default")
+
+
+class DuplicateBrandError(ValueError):
+    """Raised when inserting a brand slug that already exists in the registry."""
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +530,7 @@ def ensure_schema() -> bool:
     conn = get_connection()
     try:
         init_schema(conn)
+        seed_brand_registry(conn)
         seed_brand_catalogs(conn)
         return True
     finally:
@@ -619,7 +632,7 @@ def load_brand_rewards(brand: str, conn=None) -> list[tuple[str, int]]:
             conn.close()
 
 
-def save_brand_rewards(brand: str, rewards: list[tuple[str, int]], conn=None) -> None:
+def save_brand_rewards(brand: str, rewards: list[tuple[str, int]], conn=None, commit: bool = True) -> None:
     from psycopg2.extras import execute_values
 
     conn, close = _borrow_connection(conn)
@@ -637,7 +650,8 @@ def save_brand_rewards(brand: str, rewards: list[tuple[str, int]], conn=None) ->
                     rows,
                     page_size=100,
                 )
-        conn.commit()
+        if commit:
+            conn.commit()
     finally:
         if close:
             conn.close()
@@ -684,7 +698,7 @@ def load_catalog_skus(brand: str, conn=None) -> list[dict]:
             conn.close()
 
 
-def replace_catalog_skus(brand: str, records: list[dict], conn=None) -> int:
+def replace_catalog_skus(brand: str, records: list[dict], conn=None, commit: bool = True) -> int:
     from psycopg2.extras import execute_values
 
     conn, close = _borrow_connection(conn)
@@ -729,7 +743,8 @@ def replace_catalog_skus(brand: str, records: list[dict], conn=None) -> int:
                     "DELETE FROM brand_proposed_points WHERE brand = %s",
                     (brand,),
                 )
-        conn.commit()
+        if commit:
+            conn.commit()
         return len(normalized)
     finally:
         if close:
@@ -743,6 +758,110 @@ def merge_catalog_skus(brand: str, records: list[dict], conn=None) -> list[dict]
         merged = overlay_catalog(existing, records)
         replace_catalog_skus(brand, merged, conn=conn)
         return merged
+    finally:
+        if close:
+            conn.close()
+
+
+def load_brands(conn=None) -> list[dict]:
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT slug, label, theme, sort FROM brands ORDER BY sort, slug")
+            rows = cur.fetchall()
+        return [
+            {
+                "slug": str(slug),
+                "label": str(label),
+                "theme": str(theme or "default"),
+                "sort": int(sort),
+            }
+            for slug, label, theme, sort in rows
+        ]
+    finally:
+        if close:
+            conn.close()
+
+
+def get_brand(slug: str, conn=None) -> dict | None:
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT slug, label, theme, sort FROM brands WHERE slug = %s",
+                (slug,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        slug, label, theme, sort = row
+        return {
+            "slug": str(slug),
+            "label": str(label),
+            "theme": str(theme or "default"),
+            "sort": int(sort),
+        }
+    finally:
+        if close:
+            conn.close()
+
+
+def seed_brand_registry(conn=None) -> int:
+    """Insert Coca-Cola / Monster / Ferrera if the brands table is empty."""
+    from psycopg2.extras import execute_values
+
+    from simulator import BRAND_DEFAULTS
+
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM brands")
+            if int(cur.fetchone()[0]) > 0:
+                return 0
+            rows = [
+                (slug, meta["label"], slug, idx)
+                for idx, (slug, meta) in enumerate(BRAND_DEFAULTS.items())
+            ]
+            execute_values(
+                cur,
+                "INSERT INTO brands (slug, label, theme, sort) VALUES %s",
+                rows,
+            )
+        conn.commit()
+        return len(rows)
+    finally:
+        if close:
+            conn.close()
+
+
+def create_brand(
+    slug: str,
+    label: str,
+    theme: str,
+    records: list[dict],
+    rewards: list[tuple[str, int]],
+    conn=None,
+) -> dict:
+    """Insert a registry row plus catalog and rewards in one transaction."""
+    conn, close = _borrow_connection(conn)
+    try:
+        existing = get_brand(slug, conn=conn)
+        if existing:
+            raise DuplicateBrandError(slug)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(MAX(sort), -1) + 1 FROM brands")
+            sort = int(cur.fetchone()[0])
+            cur.execute(
+                "INSERT INTO brands (slug, label, theme, sort) VALUES (%s, %s, %s, %s)",
+                (slug, label, theme, sort),
+            )
+        replace_catalog_skus(slug, records, conn=conn, commit=False)
+        save_brand_rewards(slug, rewards, conn=conn, commit=False)
+        conn.commit()
+        return {"slug": slug, "label": label, "theme": theme, "sort": sort}
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         if close:
             conn.close()

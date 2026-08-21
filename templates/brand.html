@@ -22,6 +22,8 @@
         <select name="month" onchange="this.form.submit()">
           {% for value, label in month_options %}
           <option value="{{ value }}" {% if value == selected_month %}selected{% endif %}>{{ label }}</option>
+          {% else %}
+          <option value="" disabled selected>No order months yet</option>
           {% endfor %}
         </select>
       </label>

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -18,14 +19,19 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from data import (
     CATALOG_EXTRA_COLS,
+    PALETTE_THEMES,
+    DuplicateBrandError,
     catalog_download_frame,
     catalog_frame,
+    create_brand,
     diff_catalog,
     ensure_schema,
     format_month_label,
+    get_brand,
     get_connection,
     get_refresh_state,
     load_brand_rewards,
+    load_brands,
     load_catalog_skus,
     load_proposed_points,
     merge_catalog_skus,
@@ -48,6 +54,11 @@ from simulator import (
 
 BASE_DIR = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+RESERVED_SLUGS = frozenset({
+    "create", "new", "export", "import", "catalog", "simulate", "health", "static",
+})
 
 
 @asynccontextmanager
@@ -82,8 +93,34 @@ def load_brand_skus(brand: str) -> pd.DataFrame:
     return catalog_frame(load_catalog_skus(brand))
 
 
+def slugify(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+
+
+def registry_map() -> dict[str, dict]:
+    return {
+        row["slug"]: {"label": row["label"], "theme": row["theme"] or "default"}
+        for row in load_brands()
+    }
+
+
+def page_chrome(brand: str | None = None) -> dict:
+    brands = registry_map()
+    meta = brands.get(brand or "") or {}
+    theme = meta.get("theme") or "default"
+    if theme not in PALETTE_THEMES:
+        theme = "default"
+    return {
+        "brand": brand or "",
+        "brand_label": meta.get("label", ""),
+        "theme": theme,
+        "brands": brands,
+        "palettes": PALETTE_THEMES,
+    }
+
+
 def extra_cols_for(brand: str, skus_df: pd.DataFrame) -> list[str]:
-    cols = list(BRAND_DEFAULTS[brand]["extra_cols"])
+    cols = list(BRAND_DEFAULTS.get(brand, {}).get("extra_cols", []))
     for col in CATALOG_EXTRA_COLS:
         if col in cols or col not in skus_df.columns:
             continue
@@ -124,8 +161,23 @@ def get_rewards(brand: str) -> list[tuple[str, int]]:
     stored = load_brand_rewards(brand)
     if stored:
         return [(str(n), int(p)) for n, p in stored]
-    defaults = BRAND_DEFAULTS[brand]["rewards"]
+    defaults = BRAND_DEFAULTS.get(brand, {}).get("rewards") or {}
     return list(defaults.items())
+
+
+def empty_results(rewards: list[tuple[str, int]] | None = None) -> dict:
+    return {
+        "total_stores": 0,
+        "avg_points": 0.0,
+        "median_points": 0.0,
+        "max_points": 0.0,
+        "rewards": [
+            {"name": name, "threshold": int(pts), "count": 0, "pct": 0.0}
+            for name, pts in (rewards or [])
+        ],
+        "stores": [],
+        "histogram": [],
+    }
 
 
 def set_rewards(brand: str, rewards: list[tuple[str, int]]) -> None:
@@ -250,31 +302,36 @@ def brand_page_context(
     if state and state.get("last_refreshed_month"):
         freshness = format_month_label(state["last_refreshed_month"])
 
-    results = run_brand_simulation(raw, skus_df, selected_month, proposed, rewards)
+    if selected_month:
+        results = run_brand_simulation(raw, skus_df, selected_month, proposed, rewards)
+    else:
+        results = empty_results(rewards)
 
-    return {
-        "brand": brand,
-        "brand_label": BRAND_DEFAULTS[brand]["label"],
+    ctx = page_chrome(brand)
+    ctx.update({
         "extra_cols": extra_cols_for(brand, skus_df),
         "months": months,
         "month_options": [(m, format_month_label(m)) for m in months],
         "selected_month": selected_month,
-        "selected_month_label": format_month_label(selected_month),
+        "selected_month_label": (
+            format_month_label(selected_month) if selected_month else "no order months yet"
+        ),
         "rows": rows,
         "rewards": rewards,
         "search": search,
         "freshness": freshness,
         "results": results,
         "flash": flash,
-        "brands": BRAND_DEFAULTS,
         "bulk_value": bulk_value,
-    }
+        "open_new_brand": False,
+    })
+    return ctx
 
 
 @app.get("/brands/{brand}", response_class=HTMLResponse)
 def brand_page(request: Request, brand: str, month: str | None = None, q: str | None = None):
     brand = brand.lower()
-    if brand not in BRAND_DEFAULTS:
+    if get_brand(brand) is None:
         return TEMPLATES.TemplateResponse(
             request,
             "error.html",
@@ -294,36 +351,27 @@ def brand_page(request: Request, brand: str, month: str | None = None, q: str | 
     skus_df = enrich_skus(raw, load_brand_skus(brand))
     valid = set(skus_df["sku"].astype(str))
     months = available_months(raw, valid)
-    if not months:
-        return TEMPLATES.TemplateResponse(
-            request,
-            "error.html",
-            {"title": "No months", "message": "No order months available for this brand."},
-            status_code=404,
-        )
-
-    selected_month = month if month in months else months[-1]
+    selected_month = month if month in months else (months[-1] if months else "")
     proposed = get_proposed(brand)
     rewards = get_rewards(brand)
     flash = request.session.pop("flash", None)
+    open_new_brand = bool(request.session.pop("open_new_brand", False))
 
-    return TEMPLATES.TemplateResponse(
+    ctx = brand_page_context(
         request,
-        "brand.html",
-        brand_page_context(
-            request,
-            brand,
-            raw,
-            state,
-            selected_month,
-            months,
-            skus_df,
-            proposed,
-            rewards,
-            search=(q or "").strip(),
-            flash=flash,
-        ),
+        brand,
+        raw,
+        state,
+        selected_month,
+        months,
+        skus_df,
+        proposed,
+        rewards,
+        search=(q or "").strip(),
+        flash=flash,
     )
+    ctx["open_new_brand"] = open_new_brand
+    return TEMPLATES.TemplateResponse(request, "brand.html", ctx)
 
 
 @app.post("/brands/{brand}/simulate", response_class=HTMLResponse)
@@ -336,13 +384,13 @@ async def simulate_brand(
     action: str = Form("simulate"),
 ):
     brand = brand.lower()
-    if brand not in BRAND_DEFAULTS:
+    if get_brand(brand) is None:
         return RedirectResponse(url="/", status_code=302)
 
     form = await request.form()
     rewards = parse_reward_form(form)
     if not rewards:
-        rewards = list(BRAND_DEFAULTS[brand]["rewards"].items())
+        rewards = list((BRAND_DEFAULTS.get(brand, {}).get("rewards") or {}).items())
     set_rewards(brand, rewards)
 
     patch = parse_proposed_patch(form)
@@ -391,7 +439,7 @@ async def simulate_brand(
     skus_df = enrich_skus(raw, load_brand_skus(brand))
     valid = set(skus_df["sku"].astype(str))
     months = available_months(raw, valid)
-    selected_month = month if month in months else months[-1]
+    selected_month = month if month in months else (months[-1] if months else "")
 
     return TEMPLATES.TemplateResponse(
         request,
@@ -420,7 +468,7 @@ async def import_points(
     file: UploadFile = File(...),
 ):
     brand = brand.lower()
-    if brand not in BRAND_DEFAULTS:
+    if get_brand(brand) is None:
         return RedirectResponse(url="/", status_code=302)
 
     content = await file.read()
@@ -452,7 +500,7 @@ async def import_points(
 @app.get("/brands/{brand}/export")
 def export_skus(request: Request, brand: str):
     brand = brand.lower()
-    if brand not in BRAND_DEFAULTS:
+    if get_brand(brand) is None:
         return RedirectResponse(url="/", status_code=302)
 
     raw, _state, error = load_orders_or_error()
@@ -486,7 +534,7 @@ def _month_query(month: str, q: str = "") -> str:
 @app.get("/brands/{brand}/catalog.xlsx")
 def download_catalog(brand: str):
     brand = brand.lower()
-    if brand not in BRAND_DEFAULTS:
+    if get_brand(brand) is None:
         return RedirectResponse(url="/", status_code=302)
 
     records = load_catalog_skus(brand)
@@ -509,7 +557,7 @@ async def preview_catalog_upload(
     file: UploadFile = File(...),
 ):
     brand = brand.lower()
-    if brand not in BRAND_DEFAULTS:
+    if get_brand(brand) is None:
         return RedirectResponse(url="/", status_code=302)
 
     content = await file.read()
@@ -521,20 +569,16 @@ async def preview_catalog_upload(
     existing = load_catalog_skus(brand)
     diff = diff_catalog(existing, incoming)
     payload = json.dumps(incoming, separators=(",", ":"))
-    return TEMPLATES.TemplateResponse(
-        request,
-        "catalog_preview.html",
-        {
-            "brand": brand,
-            "brand_label": BRAND_DEFAULTS[brand]["label"],
-            "brands": BRAND_DEFAULTS,
-            "month": month,
-            "filename": file.filename or "upload",
-            "diff": diff,
-            "payload": payload,
-            "preview_limit": 25,
-        },
-    )
+    ctx = page_chrome(brand)
+    ctx.update({
+        "month": month,
+        "filename": file.filename or "upload",
+        "diff": diff,
+        "payload": payload,
+        "preview_limit": 25,
+        "open_new_brand": False,
+    })
+    return TEMPLATES.TemplateResponse(request, "catalog_preview.html", ctx)
 
 
 @app.post("/brands/{brand}/catalog/confirm")
@@ -546,7 +590,7 @@ async def confirm_catalog_upload(
     payload: str = Form(...),
 ):
     brand = brand.lower()
-    if brand not in BRAND_DEFAULTS:
+    if get_brand(brand) is None:
         return RedirectResponse(url="/", status_code=302)
 
     try:
@@ -557,19 +601,75 @@ async def confirm_catalog_upload(
         request.session["flash"] = "Catalog preview expired. Please upload the file again."
         return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
 
+    label = (get_brand(brand) or {}).get("label") or brand
     if action == "merge":
         merged = merge_catalog_skus(brand, incoming)
         request.session["flash"] = (
             f"Merged catalog: {len(incoming)} uploaded SKUs, "
-            f"{len(merged)} total in {BRAND_DEFAULTS[brand]['label']}."
+            f"{len(merged)} total in {label}."
         )
     elif action == "replace":
         count = replace_catalog_skus(brand, incoming)
         request.session["flash"] = (
-            f"Replaced catalog with {count} SKUs for {BRAND_DEFAULTS[brand]['label']}."
+            f"Replaced catalog with {count} SKUs for {label}."
         )
     else:
         request.session["flash"] = "Catalog upload cancelled."
         return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
 
     return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
+
+
+def _safe_return_to(value: str) -> str:
+    path = (value or "").strip() or "/"
+    if not path.startswith("/") or path.startswith("//"):
+        return "/"
+    return path
+
+
+def _create_error(request: Request, message: str, return_to: str):
+    request.session["flash"] = message
+    request.session["open_new_brand"] = True
+    return RedirectResponse(url=_safe_return_to(return_to), status_code=303)
+
+
+@app.post("/brands/create")
+async def create_brand_route(request: Request):
+    form = await request.form()
+    label = str(form.get("label") or "").strip()
+    slug = str(form.get("slug") or "").strip().lower() or slugify(label)
+    theme = str(form.get("theme") or "default").strip().lower()
+    return_to = str(form.get("return_to") or "/")
+    if theme not in PALETTE_THEMES:
+        theme = "default"
+    rewards = parse_reward_form(form)
+
+    if not label:
+        return _create_error(request, "Display name is required.", return_to)
+    if not SLUG_RE.fullmatch(slug) or slug in RESERVED_SLUGS:
+        return _create_error(
+            request,
+            "URL slug must be lowercase letters, numbers, and hyphens (e.g. pepsi).",
+            return_to,
+        )
+    if get_brand(slug) is not None:
+        return _create_error(request, f"A brand with slug '{slug}' already exists.", return_to)
+    if not rewards:
+        return _create_error(request, "Add at least one reward name and point cutoff.", return_to)
+
+    upload = form.get("file")
+    filename = getattr(upload, "filename", None) or ""
+    if upload is None or not filename.strip() or not hasattr(upload, "read"):
+        return _create_error(request, "Upload a participating SKUs Excel or CSV file.", return_to)
+
+    content = await upload.read()
+    incoming, error = parse_catalog_file(content, filename)
+    if error:
+        return _create_error(request, error, return_to)
+
+    try:
+        create_brand(slug, label, theme, incoming, rewards)
+    except DuplicateBrandError:
+        return _create_error(request, f"A brand with slug '{slug}' already exists.", return_to)
+
+    return RedirectResponse(url=f"/brands/{slug}", status_code=303)
