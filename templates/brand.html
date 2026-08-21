@@ -94,7 +94,7 @@
 
 <section class="panel sku-editor" id="sku-points">
   <h2>SKU Points</h2>
-  <p class="section-caption">Search, bulk-edit, and import/export points that drive the simulation. Saved for everyone.</p>
+  <p class="section-caption">Search, bulk-edit, and import/export points that drive the simulation. SKU list and current points are the shared catalog. Saved for everyone.</p>
 
   <form method="post" action="/brands/{{ brand }}/import" enctype="multipart/form-data" class="import-row">
     <input type="hidden" name="month" value="{{ selected_month }}" />
@@ -104,6 +104,16 @@
     </label>
     <button type="submit" class="button secondary">Import</button>
     <a class="button secondary" href="/brands/{{ brand }}/export">Export SKU CSV</a>
+  </form>
+
+  <form method="post" action="/brands/{{ brand }}/catalog" enctype="multipart/form-data" class="import-row" id="catalog-upload">
+    <input type="hidden" name="month" value="{{ selected_month }}" />
+    <label class="file-label">
+      Upload catalog (Excel/CSV with sku, product_title, current_points)
+      <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
+    </label>
+    <button type="submit" class="button secondary">Preview catalog</button>
+    <a class="button secondary" href="/brands/{{ brand }}/catalog.xlsx">Download catalog Excel</a>
   </form>
 
   <div class="controls sku-tools">

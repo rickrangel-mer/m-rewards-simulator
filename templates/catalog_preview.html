@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Preview catalog — {{ brand_label }}{% endblock %}
+{% block content %}
+<h1>{{ brand_label }} catalog</h1>
+<p class="section-caption">Preview of <strong>{{ filename }}</strong> before saving. Merge keeps SKUs that are not in the file. Replace makes this file the full list.</p>
+
+<div class="metrics">
+  <div><span class="metric-label">In file</span><strong>{{ "{:,}".format(diff.incoming_count) }}</strong></div>
+  <div><span class="metric-label">Currently saved</span><strong>{{ "{:,}".format(diff.existing_count) }}</strong></div>
+  <div><span class="metric-label">Added</span><strong>{{ "{:,}".format(diff.added | length) }}</strong></div>
+  <div><span class="metric-label">Removed on replace</span><strong>{{ "{:,}".format(diff.removed | length) }}</strong></div>
+  <div><span class="metric-label">Updated</span><strong>{{ "{:,}".format(diff.updated | length) }}</strong></div>
+</div>
+
+{% macro sku_table(rows, empty_label, limit=25) %}
+  {% if rows %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Product Title</th>
+          <th>Current Points</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows[:limit] %}
+        <tr>
+          <td>{{ row.sku }}</td>
+          <td>{{ row.product_title }}</td>
+          <td class="num">{{ row.current_points }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if rows | length > limit %}
+  <p class="section-caption">Showing {{ limit }} of {{ rows | length }}.</p>
+  {% endif %}
+  {% else %}
+  <p class="section-caption">{{ empty_label }}</p>
+  {% endif %}
+{% endmacro %}
+
+<section class="panel" id="catalog-added">
+  <h2>Added ({{ diff.added | length }})</h2>
+  {{ sku_table(diff.added, "No new SKUs.", preview_limit) }}
+</section>
+
+<section class="panel" id="catalog-updated">
+  <h2>Updated ({{ diff.updated | length }})</h2>
+  {% if diff.updated %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Before</th>
+          <th>After</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in diff.updated[:preview_limit] %}
+        <tr>
+          <td>{{ row.sku }}</td>
+          <td>{{ row.before.product_title }} · {{ row.before.current_points }} pts</td>
+          <td>{{ row.after.product_title }} · {{ row.after.current_points }} pts</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if diff.updated | length > preview_limit %}
+  <p class="section-caption">Showing {{ preview_limit }} of {{ diff.updated | length }}.</p>
+  {% endif %}
+  {% else %}
+  <p class="section-caption">No title or current-point changes.</p>
+  {% endif %}
+</section>
+
+<section class="panel" id="catalog-removed">
+  <h2>Removed on replace ({{ diff.removed | length }})</h2>
+  <p class="section-caption">Merge keeps these SKUs. Replace deletes them from the catalog.</p>
+  {{ sku_table(diff.removed, "Nothing would be removed.", preview_limit) }}
+</section>
+
+<form method="post" action="/brands/{{ brand }}/catalog/confirm" class="actions" id="catalog-confirm">
+  <input type="hidden" name="month" value="{{ month }}" />
+  <textarea name="payload" hidden>{{ payload }}</textarea>
+  <button type="submit" name="action" value="merge" class="button primary">Merge into catalog</button>
+  <button type="submit" name="action" value="replace" class="button secondary">Replace catalog</button>
+  <button type="submit" name="action" value="cancel" class="button">Cancel</button>
+</form>
+{% endblock %}

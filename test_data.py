@@ -8,19 +8,26 @@ import pytest
 from data import (
     SCHEMA_SQL,
     backfill_windows,
+    catalog_frame,
+    diff_catalog,
     ensure_schema,
     fetch_order_data,
     format_month_label,
     init_schema,
     load_brand_rewards,
+    load_catalog_skus,
     load_proposed_points,
     merge_proposed_points,
+    overlay_catalog,
     overlay_proposed_points,
+    parse_catalog_file,
     previous_month_window,
+    replace_catalog_skus,
     replace_month_orders,
     replace_month_orders_frame,
     replace_proposed_points,
     save_brand_rewards,
+    seed_brand_catalogs,
 )
 from refresh_orders import refresh_windows, run_refresh
 
@@ -269,6 +276,7 @@ def test_run_refresh_subsequent_month_only_pulls_previous(monkeypatch):
 def test_schema_sql_includes_proposed_and_rewards_tables():
     assert "brand_proposed_points" in SCHEMA_SQL
     assert "brand_rewards" in SCHEMA_SQL
+    assert "brand_skus" in SCHEMA_SQL
     assert "PRIMARY KEY (brand, sku)" in SCHEMA_SQL
     assert "PRIMARY KEY (brand, sort)" in SCHEMA_SQL
 
@@ -285,6 +293,7 @@ def test_init_schema_executes_new_tables():
     sql_ran = "\n".join(call.args[0] for call in cursor.execute.call_args_list)
     assert "CREATE TABLE IF NOT EXISTS brand_proposed_points" in sql_ran
     assert "CREATE TABLE IF NOT EXISTS brand_rewards" in sql_ran
+    assert "CREATE TABLE IF NOT EXISTS brand_skus" in sql_ran
     conn.commit.assert_called()
 
 
@@ -299,9 +308,11 @@ def test_ensure_schema_inits_when_url_present():
     conn = MagicMock()
     with patch("data.get_database_url", return_value="postgresql://example"), \
          patch("data.get_connection", return_value=conn), \
-         patch("data.init_schema") as init:
+         patch("data.init_schema") as init, \
+         patch("data.seed_brand_catalogs") as seed:
         assert ensure_schema() is True
         init.assert_called_once_with(conn)
+        seed.assert_called_once_with(conn)
         conn.close.assert_called_once()
 
 
@@ -404,4 +415,135 @@ def test_save_brand_rewards_replaces_rows():
         ("monster", 0, "Reward 1", 6500),
         ("monster", 1, "Reward 2", 10000),
     ]
+    conn.commit.assert_called()
+
+
+def test_parse_catalog_file_canonical_csv():
+    csv = b"sku,product_title,current_points,size\nA,Cola,100,12oz\nB,Zero,50,\n"
+    records, error = parse_catalog_file(csv, "catalog.csv")
+    assert error is None
+    by_sku = {r["sku"]: r for r in records}
+    assert by_sku["A"]["product_title"] == "Cola"
+    assert by_sku["A"]["current_points"] == 100
+    assert by_sku["A"]["size"] == "12oz"
+    assert "size" not in by_sku["B"]
+
+
+def test_parse_catalog_file_requires_title():
+    records, error = parse_catalog_file(b"sku,points\nA,100\n", "points.csv")
+    assert records is None
+    assert "product_title" in error
+
+
+def test_parse_catalog_file_last_duplicate_wins():
+    csv = b"sku,product_title,current_points\nA,First,1\nA,Second,2\n"
+    records, error = parse_catalog_file(csv, "catalog.csv")
+    assert error is None
+    assert records == [{"sku": "A", "product_title": "Second", "current_points": 2}]
+
+
+def test_overlay_catalog_keeps_omitted_and_appends_new():
+    existing = [
+        {"sku": "A", "product_title": "A", "current_points": 1},
+        {"sku": "B", "product_title": "B", "current_points": 2},
+    ]
+    incoming = [
+        {"sku": "A", "product_title": "A+", "current_points": 9},
+        {"sku": "C", "product_title": "C", "current_points": 3},
+    ]
+    merged = overlay_catalog(existing, incoming)
+    by_sku = {r["sku"]: r for r in merged}
+    assert list(by_sku) == ["A", "B", "C"]
+    assert by_sku["A"]["current_points"] == 9
+    assert by_sku["B"]["current_points"] == 2
+
+
+def test_diff_catalog_classifies_add_remove_update():
+    existing = [
+        {"sku": "A", "product_title": "A", "current_points": 1},
+        {"sku": "B", "product_title": "B", "current_points": 2},
+    ]
+    incoming = [
+        {"sku": "A", "product_title": "A+", "current_points": 1},
+        {"sku": "C", "product_title": "C", "current_points": 3},
+    ]
+    diff = diff_catalog(existing, incoming)
+    assert [r["sku"] for r in diff["added"]] == ["C"]
+    assert [r["sku"] for r in diff["removed"]] == ["B"]
+    assert diff["updated"][0]["sku"] == "A"
+    assert diff["incoming_count"] == 2
+    assert diff["existing_count"] == 2
+
+
+def test_catalog_frame_round_trip():
+    records = [
+        {"sku": "A", "product_title": "Cola", "current_points": 10, "brand": "CC"},
+    ]
+    df = catalog_frame(records)
+    assert list(df["sku"]) == ["A"]
+    assert int(df["current_points"].iloc[0]) == 10
+    assert df["brand"].iloc[0] == "CC"
+
+
+def test_seed_brand_catalogs_skips_when_populated():
+    with patch("data.count_catalog_skus", return_value=4), \
+         patch("data.replace_catalog_skus") as replace:
+        seeded = seed_brand_catalogs(conn="fake")
+    assert seeded == {}
+    replace.assert_not_called()
+
+
+def test_seed_brand_catalogs_inserts_when_empty():
+    sample = pd.DataFrame({
+        "sku": ["S1"],
+        "product_title": ["P1"],
+        "current_points": [5],
+    })
+    with patch("data.count_catalog_skus", return_value=0), \
+         patch("data.excel_skus_for_brand", return_value=sample), \
+         patch("data.replace_catalog_skus", return_value=1) as replace:
+        seeded = seed_brand_catalogs(conn="fake")
+    assert seeded == {"coca-cola": 1, "monster": 1, "ferrera": 1}
+    assert replace.call_count == 3
+
+
+def test_load_catalog_skus_maps_product_brand():
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    cursor.fetchall.return_value = [("SKU-1", "Candy", 18, None, "Ferrero", "Treats")]
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    result = load_catalog_skus("ferrera", conn=conn)
+
+    assert result == [{
+        "sku": "SKU-1",
+        "product_title": "Candy",
+        "current_points": 18,
+        "brand": "Ferrero",
+        "category": "Treats",
+    }]
+
+
+def test_replace_catalog_skus_deletes_then_inserts_and_prunes_proposed():
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch("psycopg2.extras.execute_values") as execute_values:
+        count = replace_catalog_skus(
+            "coca-cola",
+            [{"sku": "SKU-A", "product_title": "A", "current_points": 10}],
+            conn=conn,
+        )
+
+    assert count == 1
+    executed = [call.args[0] for call in cursor.execute.call_args_list]
+    assert any("DELETE FROM brand_skus" in sql for sql in executed)
+    assert any("DELETE FROM brand_proposed_points" in sql for sql in executed)
+    rows = execute_values.call_args[0][2]
+    assert rows[0][:4] == ("coca-cola", "SKU-A", "A", 10)
     conn.commit.assert_called()
