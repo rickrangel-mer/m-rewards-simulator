@@ -221,8 +221,16 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   gap: 0.25rem;
 }
 
-.metric-label { color: var(--muted); font-size: 0.8rem; }
-.metric-sub { color: var(--muted); font-size: 0.8rem; }
+.reward-metrics > div,
+.reward-result {
+  background: var(--accent-soft);
+  border-color: #b7ddd3;
+}
+
+.reward-count {
+  font-size: 1.35rem;
+  color: var(--accent);
+}
 
 .histogram {
   display: flex;
