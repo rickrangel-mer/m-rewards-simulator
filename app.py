@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -15,17 +17,22 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from data import (
+    CATALOG_EXTRA_COLS,
+    catalog_download_frame,
+    catalog_frame,
+    diff_catalog,
     ensure_schema,
     format_month_label,
     get_connection,
     get_refresh_state,
     load_brand_rewards,
-    load_cocacola_skus,
-    load_ferrera_skus,
-    load_monster_skus,
+    load_catalog_skus,
     load_proposed_points,
+    merge_catalog_skus,
     merge_proposed_points,
+    parse_catalog_file,
     read_orders,
+    replace_catalog_skus,
     save_brand_rewards,
 )
 from simulator import (
@@ -71,29 +78,19 @@ def _cached_orders(cache_month: str) -> pd.DataFrame:
     return read_orders()
 
 
-@lru_cache(maxsize=1)
-def _cached_cocacola() -> pd.DataFrame:
-    return load_cocacola_skus()
-
-
-@lru_cache(maxsize=1)
-def _cached_monster() -> pd.DataFrame:
-    return load_monster_skus()
-
-
-@lru_cache(maxsize=1)
-def _cached_ferrera() -> pd.DataFrame:
-    return load_ferrera_skus()
-
-
 def load_brand_skus(brand: str) -> pd.DataFrame:
-    if brand == "coca-cola":
-        return _cached_cocacola().copy()
-    if brand == "monster":
-        return _cached_monster().copy()
-    if brand == "ferrera":
-        return _cached_ferrera().copy()
-    raise KeyError(brand)
+    return catalog_frame(load_catalog_skus(brand))
+
+
+def extra_cols_for(brand: str, skus_df: pd.DataFrame) -> list[str]:
+    cols = list(BRAND_DEFAULTS[brand]["extra_cols"])
+    for col in CATALOG_EXTRA_COLS:
+        if col in cols or col not in skus_df.columns:
+            continue
+        series = skus_df[col]
+        if series.notna().any() and (series.astype(str).str.strip() != "").any():
+            cols.append(col)
+    return cols
 
 
 def load_orders_or_error():
@@ -258,7 +255,7 @@ def brand_page_context(
     return {
         "brand": brand,
         "brand_label": BRAND_DEFAULTS[brand]["label"],
-        "extra_cols": BRAND_DEFAULTS[brand]["extra_cols"],
+        "extra_cols": extra_cols_for(brand, skus_df),
         "months": months,
         "month_options": [(m, format_month_label(m)) for m in months],
         "selected_month": selected_month,
@@ -466,7 +463,7 @@ def export_skus(request: Request, brand: str):
     proposed = get_proposed(brand)
     rows = apply_proposed_to_rows(skus_df, proposed)
     export = pd.DataFrame(rows)
-    cols = ["sku", "product_title"] + BRAND_DEFAULTS[brand]["extra_cols"] + [
+    cols = ["sku", "product_title"] + extra_cols_for(brand, skus_df) + [
         "store_penetration", "current_points", "proposed_points",
     ]
     cols = [c for c in cols if c in export.columns]
@@ -477,3 +474,102 @@ def export_skus(request: Request, brand: str):
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _month_query(month: str, q: str = "") -> str:
+    qs = f"?month={month}"
+    if q:
+        qs += f"&q={q}"
+    return qs
+
+
+@app.get("/brands/{brand}/catalog.xlsx")
+def download_catalog(brand: str):
+    brand = brand.lower()
+    if brand not in BRAND_DEFAULTS:
+        return RedirectResponse(url="/", status_code=302)
+
+    records = load_catalog_skus(brand)
+    df = catalog_download_frame(records)
+    buffer = io.BytesIO()
+    df.to_excel(buffer, index=False)
+    filename = f"{brand}_catalog.xlsx"
+    return Response(
+        buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/brands/{brand}/catalog", response_class=HTMLResponse)
+async def preview_catalog_upload(
+    request: Request,
+    brand: str,
+    month: str = Form(""),
+    file: UploadFile = File(...),
+):
+    brand = brand.lower()
+    if brand not in BRAND_DEFAULTS:
+        return RedirectResponse(url="/", status_code=302)
+
+    content = await file.read()
+    incoming, error = parse_catalog_file(content, file.filename or "catalog.xlsx")
+    if error:
+        request.session["flash"] = error
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
+
+    existing = load_catalog_skus(brand)
+    diff = diff_catalog(existing, incoming)
+    payload = json.dumps(incoming, separators=(",", ":"))
+    return TEMPLATES.TemplateResponse(
+        request,
+        "catalog_preview.html",
+        {
+            "brand": brand,
+            "brand_label": BRAND_DEFAULTS[brand]["label"],
+            "brands": BRAND_DEFAULTS,
+            "month": month,
+            "filename": file.filename or "upload",
+            "diff": diff,
+            "payload": payload,
+            "preview_limit": 25,
+        },
+    )
+
+
+@app.post("/brands/{brand}/catalog/confirm")
+async def confirm_catalog_upload(
+    request: Request,
+    brand: str,
+    month: str = Form(""),
+    action: str = Form(...),
+    payload: str = Form(...),
+):
+    brand = brand.lower()
+    if brand not in BRAND_DEFAULTS:
+        return RedirectResponse(url="/", status_code=302)
+
+    try:
+        incoming = json.loads(payload)
+        if not isinstance(incoming, list) or not incoming:
+            raise ValueError("empty")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        request.session["flash"] = "Catalog preview expired. Please upload the file again."
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
+
+    if action == "merge":
+        merged = merge_catalog_skus(brand, incoming)
+        request.session["flash"] = (
+            f"Merged catalog: {len(incoming)} uploaded SKUs, "
+            f"{len(merged)} total in {BRAND_DEFAULTS[brand]['label']}."
+        )
+    elif action == "replace":
+        count = replace_catalog_skus(brand, incoming)
+        request.session["flash"] = (
+            f"Replaced catalog with {count} SKUs for {BRAND_DEFAULTS[brand]['label']}."
+        )
+    else:
+        request.session["flash"] = "Catalog upload cancelled."
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
+
+    return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)

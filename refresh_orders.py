@@ -48,7 +48,7 @@ def run_refresh(
     try:
         init_schema(conn)
         if sku_list is None:
-            sku_list = load_all_skus()
+            sku_list = load_all_skus(conn=conn)
 
         state = get_refresh_state(conn)
         windows = refresh_windows(today, state, num_months=num_months)
