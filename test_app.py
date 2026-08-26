@@ -219,6 +219,9 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Saved for everyone" in sku
     assert "Simulation month" not in sku
     assert "Add Reward" not in sku
+    assert 'name="proposed_points"' in sku
+    assert 'max="5000"' not in sku
+    assert 'name="bulk_value"' in sku
 
     assert "Add Reward" in rewards
     assert "Saved for everyone" in rewards
@@ -403,6 +406,30 @@ def test_simulate_round_trips_without_cookies(persist_store):
     assert b'value="333"' in page.content
     assert b"Team Cooler" in page.content
     assert b'value="1234"' in page.content
+
+
+def test_proposed_points_above_former_5000_cap_round_trip(persist_store):
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        posted = client.post(
+            "/brands/coca-cola/simulate",
+            data={
+                "month": "2026-07",
+                "action": "simulate",
+                "sku": "SKU-A",
+                "proposed_points": "8000",
+                "reward_name": "Reward 1",
+                "reward_points": "5000",
+            },
+        )
+        assert posted.status_code == 200
+        html = posted.text
+        sku = _html_between(html, "sku-points", "reward-thresholds")
+        assert 'max="5000"' not in sku
+        page = client.get("/brands/coca-cola")
+    assert persist_store.proposed["coca-cola"]["SKU-A"] == 8000
+    assert b'value="8000"' in page.content
 
 
 def test_search_filtered_post_does_not_wipe_other_skus(persist_store):
