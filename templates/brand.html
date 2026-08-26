@@ -126,7 +126,7 @@
     </label>
     <label>
       Bulk point value
-      <input form="sim-form" type="number" name="bulk_value" min="0" max="5000" step="50" value="{{ bulk_value or 100 }}" />
+      <input form="sim-form" type="number" name="bulk_value" min="0" step="50" value="{{ bulk_value or 100 }}" />
     </label>
     <button form="sim-form" type="submit" name="action" value="bulk_apply" class="button secondary">Apply to selected</button>
   </div>
@@ -161,7 +161,7 @@
           <td class="num">{{ row.store_penetration }}</td>
           <td class="num">{{ row.current_points }}</td>
           <td>
-            <input form="sim-form" type="number" name="proposed_points" min="0" max="5000" step="50"
+            <input form="sim-form" type="number" name="proposed_points" min="0" step="50"
                    value="{{ row.proposed_points }}" />
           </td>
         </tr>
