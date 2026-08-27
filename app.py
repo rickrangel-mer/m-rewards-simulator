@@ -54,6 +54,7 @@ from simulator import (
     simulate,
     summarize_results,
 )
+from refresh_orders import run_brand_refresh
 
 BASE_DIR = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -416,6 +417,37 @@ def brand_page(request: Request, brand: str, month: str | None = None, q: str | 
     )
     ctx["open_new_brand"] = open_new_brand
     return TEMPLATES.TemplateResponse(request, "brand.html", ctx)
+
+
+@app.post("/brands/{brand}/refresh-orders")
+def refresh_brand_orders(request: Request, brand: str):
+    brand = brand.lower()
+    if get_brand(brand) is None:
+        return RedirectResponse(url="/", status_code=302)
+
+    skus_df = load_brand_skus(brand)
+    sku_list = []
+    if skus_df is not None and not skus_df.empty and "sku" in skus_df.columns:
+        sku_list = [str(s) for s in skus_df["sku"].dropna().astype(str) if str(s).strip()]
+    if not sku_list:
+        request.session["flash"] = "Add participating SKUs before pulling order history."
+        return RedirectResponse(url=f"/brands/{brand}", status_code=303)
+
+    try:
+        result = run_brand_refresh(brand, sku_list=sku_list)
+    except Exception as exc:
+        request.session["flash"] = f"Could not pull order history: {exc}"
+        return RedirectResponse(url=f"/brands/{brand}", status_code=303)
+
+    _cached_orders.cache_clear()
+    first_label = format_month_label(result["start"].strftime("%Y-%m"))
+    last_start = result["windows"][-1][0]
+    last_label = format_month_label(last_start.strftime("%Y-%m"))
+    request.session["flash"] = (
+        f"Pulled {result['rows']:,} order rows for {result['sku_count']} SKUs "
+        f"({first_label}–{last_label})."
+    )
+    return RedirectResponse(url=f"/brands/{brand}", status_code=303)
 
 
 @app.post("/brands/{brand}/simulate", response_class=HTMLResponse)

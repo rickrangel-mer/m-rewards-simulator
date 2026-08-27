@@ -18,8 +18,10 @@ from data import (
     get_refresh_state,
     init_schema,
     load_all_skus,
+    load_catalog_skus,
     previous_month_window,
     replace_month_orders,
+    replace_sku_orders,
     set_refresh_state,
 )
 
@@ -69,6 +71,58 @@ def run_refresh(
         return {
             "last_refreshed_month": month_key,
             "row_count": row_count,
+            "windows": windows,
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def run_brand_refresh(
+    brand: str,
+    today: date | None = None,
+    sku_list: list[str] | None = None,
+    fetch_fn=None,
+    conn=None,
+    num_months: int = NUM_MONTHS,
+) -> dict:
+    """Pull Athena orders for one brand's SKUs over the last complete months.
+
+    Does not replace other brands' rows and does not update refresh_state
+    (the monthly cron still owns the full snapshot).
+    """
+    today = today or date.today()
+    fetch_fn = fetch_fn or fetch_order_data
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        init_schema(conn)
+        if sku_list is None:
+            sku_list = [str(row["sku"]) for row in load_catalog_skus(brand, conn=conn)]
+        sku_list = [str(s) for s in sku_list if str(s).strip()]
+        if not sku_list:
+            raise ValueError("No participating SKUs on this brand.")
+
+        windows = backfill_windows(today, num_months=num_months)
+        if not windows:
+            raise RuntimeError("No refresh windows computed")
+        start, end = windows[0][0], windows[-1][1]
+        print(
+            f"Fetching Athena orders for {brand} "
+            f"{start.isoformat()} to {end.isoformat()} (exclusive), {len(sku_list)} SKUs..."
+        )
+        orders = fetch_fn(sku_list, start, end)
+        n = replace_sku_orders(conn, orders, start, end, sku_list)
+        print(f"  upserted {n:,} rows for {brand}")
+        return {
+            "brand": brand,
+            "rows": n,
+            "sku_count": len(sku_list),
+            "start": start,
+            "end": end,
             "windows": windows,
         }
     finally:

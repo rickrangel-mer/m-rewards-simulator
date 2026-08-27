@@ -29,11 +29,13 @@ from data import (
     replace_month_orders,
     replace_month_orders_frame,
     replace_proposed_points,
+    replace_sku_orders,
+    replace_sku_orders_frame,
     save_brand_rewards,
     seed_brand_catalogs,
     seed_brand_registry,
 )
-from refresh_orders import refresh_windows, run_refresh
+from refresh_orders import refresh_windows, run_brand_refresh, run_refresh
 
 
 def test_previous_month_window_september_pulls_august():
@@ -623,3 +625,87 @@ def test_create_brand_raises_on_duplicate_without_writes():
     replace.assert_not_called()
     save.assert_not_called()
     conn.rollback.assert_called()
+
+
+def test_replace_sku_orders_frame_keeps_other_skus_in_month():
+    existing = pd.DataFrame({
+        "store_id": ["S1", "S1", "S2"],
+        "sku": ["COKE", "RB", "COKE"],
+        "order_date": pd.to_datetime(["2026-08-10", "2026-08-10", "2026-07-10"]),
+        "total_quantity": [1, 2, 3],
+    })
+    incoming = pd.DataFrame({
+        "store_id": ["S3"],
+        "sku": ["RB"],
+        "order_date": pd.to_datetime(["2026-08-15"]),
+        "total_quantity": [9],
+    })
+    result = replace_sku_orders_frame(
+        existing, incoming, date(2026, 8, 1), date(2026, 9, 1), ["RB"],
+    )
+    months = result["order_date"].dt.to_period("M").astype(str)
+    august = result[months == "2026-08"]
+    assert set(august["sku"]) == {"COKE", "RB"}
+    assert int(august.loc[august["sku"] == "RB", "total_quantity"].iloc[0]) == 9
+    assert int(august.loc[august["sku"] == "COKE", "total_quantity"].iloc[0]) == 1
+    assert (months == "2026-07").sum() == 1
+
+
+def test_replace_sku_orders_deletes_only_listed_skus():
+    incoming = pd.DataFrame({
+        "store_id": ["S1"],
+        "sku": ["RB-1"],
+        "order_date": pd.to_datetime(["2026-08-05"]),
+        "total_quantity": [4],
+    })
+    cursor = MagicMock()
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = False
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch("psycopg2.extras.execute_values") as execute_values:
+        inserted = replace_sku_orders(
+            conn, incoming, date(2026, 8, 1), date(2026, 9, 1), ["RB-1", "RB-2"],
+        )
+
+    assert inserted == 1
+    delete_sql, delete_params = cursor.execute.call_args[0]
+    assert "DELETE FROM orders" in delete_sql
+    assert "sku = ANY" in delete_sql
+    assert delete_params == (date(2026, 8, 1), date(2026, 9, 1), ["RB-1", "RB-2"])
+    execute_values.assert_called_once()
+
+
+def test_run_brand_refresh_one_athena_query_does_not_touch_refresh_state():
+    calls = []
+
+    def fake_fetch(sku_list, start, end):
+        calls.append((tuple(sku_list), start, end))
+        return pd.DataFrame({
+            "store_id": ["S1"],
+            "sku": ["RB-1"],
+            "order_date": [pd.Timestamp(start)],
+            "total_quantity": [1],
+        })
+
+    conn = MagicMock()
+    with patch("refresh_orders.init_schema"), \
+         patch("refresh_orders.replace_sku_orders", return_value=4) as replace, \
+         patch("refresh_orders.set_refresh_state") as set_state:
+        result = run_brand_refresh(
+            "redbull",
+            today=date(2026, 9, 1),
+            sku_list=["RB-1"],
+            fetch_fn=fake_fetch,
+            conn=conn,
+            num_months=6,
+        )
+
+    assert len(calls) == 1
+    assert calls[0] == (("RB-1",), date(2026, 3, 1), date(2026, 9, 1))
+    replace.assert_called_once()
+    set_state.assert_not_called()
+    assert result["rows"] == 4
+    assert result["sku_count"] == 1
+    assert result["brand"] == "redbull"

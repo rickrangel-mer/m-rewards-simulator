@@ -946,6 +946,37 @@ def replace_month_orders_frame(
     return pd.concat([kept, new_rows], ignore_index=True)
 
 
+def replace_sku_orders_frame(
+    existing: pd.DataFrame,
+    incoming: pd.DataFrame,
+    start: date,
+    end: date,
+    skus,
+) -> pd.DataFrame:
+    """Replace [start, end) rows for `skus` only. Other SKUs in the window stay."""
+    sku_set = {str(s) for s in (skus or []) if str(s).strip()}
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+    if existing is None or existing.empty:
+        kept = empty_orders_frame()
+    else:
+        kept = existing.copy()
+        kept["order_date"] = pd.to_datetime(kept["order_date"])
+        kept["sku"] = kept["sku"].astype(str)
+        in_window = (kept["order_date"] >= start_ts) & (kept["order_date"] < end_ts)
+        drop = in_window & kept["sku"].isin(sku_set)
+        kept = kept[~drop]
+    if incoming is None or incoming.empty:
+        new_rows = empty_orders_frame()
+    else:
+        new_rows = incoming.copy()
+        new_rows["order_date"] = pd.to_datetime(new_rows["order_date"])
+        new_rows["sku"] = new_rows["sku"].astype(str)
+        if sku_set:
+            new_rows = new_rows[new_rows["sku"].isin(sku_set)]
+    return pd.concat([kept, new_rows], ignore_index=True)
+
+
 def _normalize_order_date(value) -> date:
     if isinstance(value, pd.Timestamp):
         return value.date()
@@ -981,6 +1012,38 @@ def replace_month_orders(conn, orders: pd.DataFrame, start: date, end: date) -> 
             conn.commit()
             return 0
         rows = _order_rows(orders)
+        execute_values(
+            cur,
+            "INSERT INTO orders (store_id, sku, order_date, total_quantity) VALUES %s",
+            rows,
+            page_size=1000,
+        )
+    conn.commit()
+    return len(rows)
+
+
+def replace_sku_orders(conn, orders: pd.DataFrame, start: date, end: date, skus) -> int:
+    """Delete [start, end) rows for `skus` only, then insert `orders`. Other SKUs stay."""
+    from psycopg2.extras import execute_values
+
+    sku_list = [str(s) for s in (skus or []) if str(s).strip()]
+    with conn.cursor() as cur:
+        if sku_list:
+            cur.execute(
+                "DELETE FROM orders WHERE order_date >= %s AND order_date < %s AND sku = ANY(%s)",
+                (start, end, sku_list),
+            )
+        if orders is None or orders.empty:
+            conn.commit()
+            return 0
+        incoming = orders.copy()
+        incoming["sku"] = incoming["sku"].astype(str)
+        if sku_list:
+            incoming = incoming[incoming["sku"].isin(set(sku_list))]
+        if incoming.empty:
+            conn.commit()
+            return 0
+        rows = _order_rows(incoming)
         execute_values(
             cur,
             "INSERT INTO orders (store_id, sku, order_date, total_quantity) VALUES %s",

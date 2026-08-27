@@ -13,7 +13,11 @@
       <h2>Simulation Results</h2>
       <p class="section-caption">Using {{ selected_month_label }} ordering data. Total Stores and % of stores are stores that ordered this brand this month.</p>
     </div>
-    <form method="get" action="/brands/{{ brand }}" class="month-picker" id="month-form">
+    <div class="month-tools">
+      <form method="post" action="/brands/{{ brand }}/refresh-orders" id="brand-refresh-form">
+        <button type="submit" class="button secondary">Pull order history</button>
+      </form>
+      <form method="get" action="/brands/{{ brand }}" class="month-picker" id="month-form">
       {% if search %}
       <input type="hidden" name="q" value="{{ search }}" />
       {% endif %}
@@ -29,6 +33,7 @@
       </label>
       <noscript><button type="submit" class="button secondary">Show month</button></noscript>
     </form>
+    </div>
   </div>
 
   {% if results %}
