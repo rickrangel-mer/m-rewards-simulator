@@ -31,7 +31,6 @@
     var rows = Array.prototype.slice.call(tbody.rows).filter(function (row) {
       return row.cells.length > 1;
     });
-    if (rows.length < 2) return;
 
     var current = th.getAttribute("aria-sort");
     var dir = current === "ascending" ? "descending" : "ascending";
@@ -39,6 +38,7 @@
       header.removeAttribute("aria-sort");
     });
     th.setAttribute("aria-sort", dir);
+    if (rows.length < 2) return;
 
     rows.sort(function (rowA, rowB) {
       var result = compare(cellValue(rowA.cells[colIdx]), cellValue(rowB.cells[colIdx]));
@@ -54,6 +54,7 @@
     Array.prototype.forEach.call(headers, function (th, colIdx) {
       th.classList.add("sortable");
       th.setAttribute("role", "columnheader");
+      th.setAttribute("title", "Click to sort");
       th.tabIndex = 0;
       th.addEventListener("click", function () { sortTable(table, colIdx, th); });
       th.addEventListener("keydown", function (event) {

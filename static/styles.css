@@ -305,8 +305,9 @@ th.sortable:focus {
 
 th.sortable::after {
   content: " \2195";
-  font-size: 0.75em;
-  opacity: 0.4;
+  font-size: 0.8em;
+  opacity: 0.55;
+  color: var(--muted);
 }
 
 th.sortable[aria-sort="ascending"]::after {
