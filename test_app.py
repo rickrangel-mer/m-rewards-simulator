@@ -204,6 +204,8 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Stores earning each reward" in results
     assert "Points Distribution" in results
     assert "Store-level detail" in results
+    assert 'class="data-table"' in results
+    assert "/static/tables.js" in html
     assert "Search SKUs" not in results
     assert "Bulk point value" not in results
     assert "Import proposed points" not in results
@@ -219,6 +221,7 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Upload catalog" in sku
     assert "Preview catalog" in sku
     assert "Download catalog Excel" in sku
+    assert 'class="data-table"' in sku
     assert "SKU-A" in sku
     assert "Saved for everyone" in sku
     assert "Simulation month" not in sku
@@ -257,6 +260,8 @@ def test_all_brands_render_sectioned_pages():
             assert 'id="month-form"' in html
             assert 'id="brand-refresh-form"' in html
             assert "Pull order history" in html
+            assert 'class="data-table"' in html
+            assert "/static/tables.js" in html
             assert "Update Simulation" in html
             assert "Download catalog Excel" in html
             assert 'id="catalog-upload"' in html
@@ -698,6 +703,8 @@ def test_catalog_preview_shows_add_update_remove(persist_store):
     assert "Replace catalog" in html
     assert 'id="catalog-confirm"' in html
     assert 'data-brand="coca-cola"' in html
+    assert 'class="data-table"' in html
+    assert "/static/tables.js" in html
 
 
 def test_catalog_merge_keeps_omitted_skus(persist_store):
@@ -822,6 +829,14 @@ def test_brand_theme_css_uses_variables_and_palettes():
     assert ".bar-fill" in css
     assert "background: var(--bar)" in css
     assert "background: var(--bg)" in css
+    assert "th.sortable" in css
+
+
+def test_table_sort_script_is_served():
+    client = TestClient(webapp.app)
+    js = client.get("/static/tables.js").text
+    assert "sortTable" in js
+    assert "aria-sort" in js
 
 
 def _live_catalog(persist_store, orders=None):
