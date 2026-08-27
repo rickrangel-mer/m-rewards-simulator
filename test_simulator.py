@@ -57,6 +57,13 @@ def test_parse_imported_points_csv():
     assert mapping == {"A": 100, "B": 200}
 
 
+def test_parse_imported_points_ignores_extra_columns():
+    csv = b"sku,Product Title ,Package Size,points\nDW12419-24,Red Bull,24,50\n"
+    mapping, error = parse_imported_points(csv, "sales.csv")
+    assert error is None
+    assert mapping == {"DW12419-24": 50}
+
+
 def test_summarize_results_empty():
     empty = pd.DataFrame(columns=["store_id", "total_points", "total_units", "distinct_skus"])
     summary = summarize_results(empty, {"Reward 1": 100})

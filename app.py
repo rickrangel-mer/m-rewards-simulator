@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -75,6 +77,36 @@ app.add_middleware(
     secret_key=os.environ.get("SESSION_SECRET", "m-rewards-dev-secret-change-me"),
     max_age=60 * 60 * 12,
 )
+
+
+def _brand_from_path(path: str) -> str | None:
+    parts = [p for p in path.split("/") if p]
+    if len(parts) >= 2 and parts[0] == "brands":
+        return parts[1]
+    return None
+
+
+@app.exception_handler(RequestValidationError)
+async def form_validation_to_flash(request: Request, exc: RequestValidationError):
+    """HTML/multipart form posts should flash and redirect, not return JSON 422."""
+    content_type = request.headers.get("content-type", "")
+    is_form = request.method == "POST" and (
+        "multipart/form-data" in content_type
+        or "application/x-www-form-urlencoded" in content_type
+    )
+    brand = _brand_from_path(request.url.path)
+    if not is_form or not brand:
+        return await request_validation_exception_handler(request, exc)
+
+    missing = [str(err.get("loc", ["?"])[-1]) for err in exc.errors() if err.get("type") == "missing"]
+    if "file" in missing:
+        message = "Choose a CSV or Excel file before importing."
+    elif "month" in missing:
+        message = "Import did not include the simulation month. Use the Import button on the brand page."
+    else:
+        message = "Could not process that upload. Check the file and try again."
+    request.session["flash"] = message
+    return RedirectResponse(url=f"/brands/{brand}", status_code=303)
 
 
 def _load_refresh_state():
@@ -476,7 +508,7 @@ async def simulate_brand(
 async def import_points(
     request: Request,
     brand: str,
-    month: str = Form(...),
+    month: str = Form(""),
     file: UploadFile = File(...),
 ):
     brand = brand.lower()
@@ -487,7 +519,7 @@ async def import_points(
     points_map, error = parse_imported_points(content, file.filename or "upload.csv")
     if error:
         request.session["flash"] = error
-        return RedirectResponse(url=f"/brands/{brand}?month={month}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
 
     skus_df = load_brand_skus(brand)
     valid = set(skus_df["sku"].dropna().astype(str))
@@ -506,7 +538,7 @@ async def import_points(
     if matched == 0:
         msg = "No matching SKUs found in the uploaded file."
     request.session["flash"] = msg
-    return RedirectResponse(url=f"/brands/{brand}?month={month}", status_code=303)
+    return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
 
 
 @app.get("/brands/{brand}/export")
