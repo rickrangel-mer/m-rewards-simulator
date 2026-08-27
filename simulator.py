@@ -90,12 +90,15 @@ def simulate(month_orders, sku_to_title, points_lookup, reward_thresholds) -> pd
 def parse_imported_points(file_bytes: bytes, filename: str):
     name = filename.lower()
     buffer = io.BytesIO(file_bytes)
-    if name.endswith(".csv"):
-        df = pd.read_csv(buffer)
-    elif name.endswith((".xlsx", ".xls")):
-        df = pd.read_excel(buffer)
-    else:
-        return None, "Unsupported file type. Please upload a CSV or Excel file."
+    try:
+        if name.endswith(".csv"):
+            df = pd.read_csv(buffer)
+        elif name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(buffer)
+        else:
+            return None, "Unsupported file type. Please upload a CSV or Excel file."
+    except Exception as exc:
+        return None, f"Could not read file: {exc}"
 
     df.columns = df.columns.str.strip().str.lower()
     if "sku" not in df.columns or "points" not in df.columns:

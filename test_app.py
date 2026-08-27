@@ -379,6 +379,56 @@ def test_import_points_uses_hidden_month():
     assert b'value="400"' in page.content
 
 
+def test_import_points_without_month_does_not_return_json_422():
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/coca-cola/import",
+            files={"file": ("points.csv", BytesIO(b"sku,points\nSKU-A,400\n"), "text/csv")},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert "application/json" not in response.headers.get("content-type", "")
+        page = client.get(response.headers["location"])
+    assert b"Imported points for 1 SKUs." in page.content
+    assert b'value="400"' in page.content
+
+
+def test_import_points_accepts_sales_workbook_columns(persist_store):
+    csv = (
+        b"sku,Product Title ,Package Size,Brand,Sales (4 WOS),points\n"
+        b"SKU-A,Red Bull,24,Red Bull,1389,50\n"
+    )
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/coca-cola/import",
+            files={"file": ("Redbull Monthly Sales.csv", BytesIO(csv), "text/csv")},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        page = client.get(response.headers["location"])
+    assert persist_store.proposed["coca-cola"]["SKU-A"] == 50
+    assert b"Imported points for 1 SKUs." in page.content
+
+
+def test_import_missing_file_redirects_instead_of_json_422():
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/coca-cola/import",
+            data={"month": "2026-07"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert "application/json" not in response.headers.get("content-type", "")
+        page = client.get(response.headers["location"])
+    assert b"Choose a CSV or Excel file" in page.content
+
+
 def test_simulate_round_trips_without_cookies(persist_store):
     orders_patch, skus_patch = _mocked_client()
     with orders_patch, skus_patch:
