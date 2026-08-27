@@ -1,3 +1,4 @@
+from datetime import date
 from io import BytesIO
 from unittest.mock import patch
 import json
@@ -192,6 +193,9 @@ def test_brand_page_sections_place_controls_with_outcomes():
     rewards = _html_between(html, "reward-thresholds")
 
     assert 'id="month-form"' in results
+    assert 'id="brand-refresh-form"' in results
+    assert results.index('id="brand-refresh-form"') < results.index('id="month-form"')
+    assert "Pull order history" in results
     assert 'method="get"' in results
     assert "Simulation month" in results
     assert "Total Stores" in results
@@ -219,6 +223,7 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Saved for everyone" in sku
     assert "Simulation month" not in sku
     assert "Add Reward" not in sku
+    assert "Pull order history" not in sku
     assert 'name="proposed_points"' in sku
     assert 'max="5000"' not in sku
     assert 'name="bulk_value"' in sku
@@ -230,6 +235,7 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Simulation month" not in rewards
     assert "Import proposed points" not in rewards
     assert "Upload catalog" not in rewards
+    assert "Pull order history" not in rewards
 
 
 def test_all_brands_render_sectioned_pages():
@@ -249,6 +255,8 @@ def test_all_brands_render_sectioned_pages():
             assert 'id="sku-points"' in html
             assert 'id="reward-thresholds"' in html
             assert 'id="month-form"' in html
+            assert 'id="brand-refresh-form"' in html
+            assert "Pull order history" in html
             assert "Update Simulation" in html
             assert "Download catalog Excel" in html
             assert 'id="catalog-upload"' in html
@@ -862,7 +870,8 @@ def test_new_brand_modal_lists_requirements():
     assert "Download template" in html
     assert 'href="/catalog-template.xlsx"' in html
     assert "At least one reward" in html
-    assert "next Athena refresh" in html
+    assert "Pull order history" in html
+    assert "next monthly Athena refresh" in html
     assert 'action="/brands/create"' in html
     assert "Palette (optional)" in html
 
@@ -1046,3 +1055,53 @@ def test_unknown_brand_is_404(persist_store):
     assert response.status_code == 404
     assert b"Unknown brand" in response.content
 
+
+def test_pull_order_history_posts_brand_skus_only(persist_store):
+    captured = {}
+
+    def fake_refresh(brand, sku_list=None, **kwargs):
+        captured["brand"] = brand
+        captured["sku_list"] = list(sku_list)
+        return {
+            "brand": brand,
+            "rows": 12,
+            "sku_count": len(sku_list),
+            "start": date(2026, 3, 1),
+            "end": date(2026, 9, 1),
+            "windows": [(date(2026, 3, 1), date(2026, 4, 1)), (date(2026, 8, 1), date(2026, 9, 1))],
+        }
+
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch, patch.object(webapp, "run_brand_refresh", side_effect=fake_refresh):
+        client = TestClient(webapp.app)
+        response = client.post("/brands/coca-cola/refresh-orders", follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/brands/coca-cola"
+        page = client.get(response.headers["location"])
+    assert captured["brand"] == "coca-cola"
+    assert captured["sku_list"] == ["SKU-A"]
+    assert b"Pulled 12 order rows for 1 SKUs" in page.content
+
+
+def test_pull_order_history_without_skus_does_not_call_athena():
+    empty = pd.DataFrame(columns=["sku", "product_title", "current_points"])
+    orders_patch, skus_patch = _mocked_client(skus=empty)
+    with orders_patch, skus_patch, patch.object(webapp, "run_brand_refresh") as refresh:
+        client = TestClient(webapp.app)
+        response = client.post("/brands/coca-cola/refresh-orders", follow_redirects=False)
+        assert response.status_code == 303
+        page = client.get(response.headers["location"])
+    refresh.assert_not_called()
+    assert b"Add participating SKUs" in page.content
+
+
+def test_pull_order_history_athena_error_flashes(persist_store):
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch, patch.object(
+        webapp, "run_brand_refresh", side_effect=RuntimeError("Athena timeout")
+    ):
+        client = TestClient(webapp.app)
+        response = client.post("/brands/coca-cola/refresh-orders", follow_redirects=False)
+        page = client.get(response.headers["location"])
+    assert b"Could not pull order history: Athena timeout" in page.content
+    assert b"application/json" not in page.headers.get("content-type", "").encode()

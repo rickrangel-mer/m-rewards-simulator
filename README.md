@@ -2,7 +2,7 @@
 
 FastAPI + Jinja2 web app that simulates M-Rewards outcomes from store order history. Brand SKU catalogs (which SKUs exist, titles, current points) live in **Railway Postgres**, seeded once from the git Excel workbooks. Order snapshots also live in Postgres, refreshed monthly from AWS Athena.
 
-The web app never queries Athena. Athena is a pull source used only by the monthly job.
+The website reads Postgres. The monthly cron pulls Athena into `orders`. Operators can also **Pull order history** on a brand page to query Athena for that brand's SKUs only (last 6 complete months) without waiting for the 1st-of-month job.
 
 ## Data flow
 
@@ -43,8 +43,9 @@ Add Railway Postgres. Both services should receive `DATABASE_URL` (Railway does 
 ### 2. Web service (FastAPI)
 
 - Start command comes from `railway.toml` (`sh start.sh` → FastAPI/uvicorn by default).
-- Env: `DATABASE_URL` only. Do **not** set `SERVICE_ROLE`.
+- Env: `DATABASE_URL`. Do **not** set `SERVICE_ROLE`.
 - Optional: `SESSION_SECRET` (any long random string) for form session cookies.
+- Optional (needed for **Pull order history** on a brand page): the same Athena AWS vars as the cron service (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `ATHENA_S3_STAGING`). The monthly cron still refreshes every catalog SKU; the button pulls only that brand's SKUs.
 
 Generate a public domain on the web service (Settings → Networking).
 
