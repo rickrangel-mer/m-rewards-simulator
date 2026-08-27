@@ -291,6 +291,35 @@ th {
   z-index: 1;
 }
 
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+th.sortable:hover,
+th.sortable:focus {
+  color: var(--accent);
+  outline: none;
+}
+
+th.sortable::after {
+  content: " \2195";
+  font-size: 0.8em;
+  opacity: 0.55;
+  color: var(--muted);
+}
+
+th.sortable[aria-sort="ascending"]::after {
+  content: " \2191";
+  opacity: 1;
+}
+
+th.sortable[aria-sort="descending"]::after {
+  content: " \2193";
+  opacity: 1;
+}
+
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .rewards-grid {

@@ -15,7 +15,7 @@
 {% macro sku_table(rows, empty_label, limit=25) %}
   {% if rows %}
   <div class="table-wrap">
-    <table>
+    <table class="data-table">
       <thead>
         <tr>
           <th>SKU</th>
@@ -51,7 +51,7 @@
   <h2>Updated ({{ diff.updated | length }})</h2>
   {% if diff.updated %}
   <div class="table-wrap">
-    <table>
+    <table class="data-table">
       <thead>
         <tr>
           <th>SKU</th>
