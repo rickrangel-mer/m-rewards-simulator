@@ -14,9 +14,11 @@
       <p class="section-caption">Using {{ selected_month_label }} ordering data. Total Stores and % of stores are stores that ordered this brand this month.</p>
     </div>
     <div class="month-tools">
+      {% if is_operator %}
       <form method="post" action="/brands/{{ brand }}/refresh-orders" id="brand-refresh-form">
         <button type="submit" class="button secondary">Pull order history</button>
       </form>
+      {% endif %}
       <form method="get" action="/brands/{{ brand }}" class="month-picker" id="month-form">
       {% if search %}
       <input type="hidden" name="q" value="{{ search }}" />

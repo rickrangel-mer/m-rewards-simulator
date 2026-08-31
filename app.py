@@ -6,9 +6,11 @@ import io
 import json
 import os
 import re
+import sys
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -21,18 +23,29 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from data import (
     CATALOG_EXTRA_COLS,
+    OPERATOR_ROLE,
     PALETTE_THEMES,
+    SUPPLIER_ROLE,
+    USER_ROLES,
     DuplicateBrandError,
+    DuplicateUserError,
     catalog_download_frame,
     catalog_frame,
     catalog_template_frame,
+    count_users,
     create_brand,
+    create_user,
+    delete_user,
     diff_catalog,
     ensure_schema,
     format_month_label,
     get_brand,
     get_connection,
     get_refresh_state,
+    get_user_by_email,
+    get_user_by_id,
+    hash_password,
+    list_users,
     load_brand_rewards,
     load_brands,
     load_catalog_skus,
@@ -43,6 +56,9 @@ from data import (
     read_orders,
     replace_catalog_skus,
     save_brand_rewards,
+    set_user_brands,
+    set_user_password,
+    verify_password,
 )
 from simulator import (
     BRAND_DEFAULTS,
@@ -62,7 +78,10 @@ TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 RESERVED_SLUGS = frozenset({
     "create", "new", "export", "import", "catalog", "simulate", "health", "static",
+    "login", "logout", "users",
 })
+PUBLIC_PATHS = frozenset({"/health", "/login"})
+PUBLIC_PREFIXES = ("/static/",)
 
 
 @asynccontextmanager
@@ -71,11 +90,44 @@ async def lifespan(app: FastAPI):
     yield
 
 
+def session_secret() -> str:
+    secret = (os.environ.get("SESSION_SECRET") or "").strip()
+    if secret:
+        return secret
+    if "pytest" in sys.modules:
+        return "test"
+    raise RuntimeError(
+        "SESSION_SECRET is required for signed session cookies. "
+        "Set it on the web service Variables tab to a long random string."
+    )
+
+
 app = FastAPI(title="M-Rewards Simulator", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+        return await call_next(request)
+    user = current_user(request)
+    if user is None:
+        login = "/login"
+        if request.method == "GET":
+            nxt = path
+            if request.url.query:
+                nxt = f"{path}?{request.url.query}"
+            if nxt.startswith("/") and not nxt.startswith("//"):
+                login = f"/login?next={quote(nxt, safe='/?&=')}"
+        return RedirectResponse(url=login, status_code=302)
+    request.state.user = user
+    return await call_next(request)
+
+
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ.get("SESSION_SECRET", "m-rewards-dev-secret-change-me"),
+    secret_key=session_secret(),
     max_age=60 * 60 * 12,
 )
 
@@ -138,8 +190,52 @@ def registry_map() -> dict[str, dict]:
     }
 
 
-def page_chrome(brand: str | None = None) -> dict:
+def current_user(request: Request) -> dict | None:
+    user_id = request.session.get("user_id")
+    if not user_id:
+        return None
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    return get_user_by_id(user_id)
+
+
+def request_user(request: Request) -> dict | None:
+    user = getattr(request.state, "user", None)
+    if user is not None:
+        return user
+    return current_user(request)
+
+
+def allowed_brands(user) -> dict[str, dict]:
     brands = registry_map()
+    if not user:
+        return {}
+    if user.get("role") == OPERATOR_ROLE:
+        return brands
+    assigned = {str(slug) for slug in (user.get("brands") or [])}
+    return {slug: meta for slug, meta in brands.items() if slug in assigned}
+
+
+def can_access_brand(user, slug: str) -> bool:
+    if not user or not slug:
+        return False
+    slug = slug.lower()
+    if user.get("role") == OPERATOR_ROLE:
+        return get_brand(slug) is not None
+    return slug in {str(s) for s in (user.get("brands") or [])}
+
+
+def first_allowed_brand(user) -> str | None:
+    brands = allowed_brands(user)
+    if not brands:
+        return None
+    return next(iter(brands))
+
+
+def page_chrome(brand: str | None = None, user=None) -> dict:
+    brands = allowed_brands(user) if user is not None else registry_map()
     meta = brands.get(brand or "") or {}
     theme = meta.get("theme") or "default"
     if theme not in PALETTE_THEMES:
@@ -150,7 +246,45 @@ def page_chrome(brand: str | None = None) -> dict:
         "theme": theme,
         "brands": brands,
         "palettes": PALETTE_THEMES,
+        "user_email": (user or {}).get("email") or "",
+        "is_operator": (user or {}).get("role") == OPERATOR_ROLE,
+        "user_role": (user or {}).get("role") or "",
+        "open_new_brand": False,
     }
+
+
+def error_page(request: Request, title: str, message: str, status_code: int):
+    user = request_user(request)
+    ctx = page_chrome(user=user)
+    ctx.update({
+        "title": title,
+        "message": message,
+        "flash": None,
+    })
+    return TEMPLATES.TemplateResponse(request, "error.html", ctx, status_code=status_code)
+
+
+def unknown_brand_response(request: Request, brand: str):
+    return error_page(request, "Unknown brand", f"Unknown brand: {brand}", 404)
+
+
+def forbidden_response(request: Request, title: str = "Not allowed", message: str = "You do not have access to that page."):
+    return error_page(request, title, message, 403)
+
+
+def require_brand(request: Request, brand: str) -> tuple[str, Response | None]:
+    brand = (brand or "").lower()
+    user = request_user(request)
+    if get_brand(brand) is None or not can_access_brand(user, brand):
+        return brand, unknown_brand_response(request, brand)
+    return brand, None
+
+
+def require_operator(request: Request) -> Response | None:
+    user = request_user(request)
+    if not user or user.get("role") != OPERATOR_ROLE:
+        return forbidden_response(request)
+    return None
 
 
 def extra_cols_for(brand: str, skus_df: pd.DataFrame) -> list[str]:
@@ -289,13 +423,74 @@ def parse_proposed_form(form) -> dict[str, int]:
 
 
 @app.get("/", response_class=HTMLResponse)
-def home():
-    return RedirectResponse(url="/brands/coca-cola", status_code=302)
+def home(request: Request):
+    user = request_user(request)
+    first = first_allowed_brand(user)
+    if not first:
+        ctx = page_chrome(user=user)
+        ctx.update({
+            "flash": request.session.pop("flash", None),
+        })
+        return TEMPLATES.TemplateResponse(request, "no_brands.html", ctx)
+    return RedirectResponse(url=f"/brands/{first}", status_code=302)
 
 
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+def _safe_next(value: str) -> str:
+    path = (value or "").strip() or "/"
+    if not path.startswith("/") or path.startswith("//") or path.startswith("/login"):
+        return "/"
+    return path
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "/"):
+    if current_user(request):
+        return RedirectResponse(url=_safe_next(next), status_code=302)
+    operator_configured = count_users() > 0
+    return TEMPLATES.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "next": _safe_next(next),
+            "flash": request.session.pop("flash", None),
+            "operator_configured": operator_configured,
+        },
+    )
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    form = await request.form()
+    email = str(form.get("email") or "").strip().lower()
+    password = str(form.get("password") or "")
+    next_url = _safe_next(str(form.get("next") or "/"))
+    user = get_user_by_email(email)
+    hashed = (user or {}).get("password_hash") or ""
+    if not user or not verify_password(password, hashed):
+        return TEMPLATES.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "next": next_url,
+                "flash": "Invalid email or password.",
+                "operator_configured": count_users() > 0,
+                "email": email,
+            },
+            status_code=200,
+        )
+    request.session["user_id"] = user["id"]
+    return RedirectResponse(url=next_url, status_code=302)
+
+
+@app.post("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=302)
 
 
 @app.get("/catalog-template.xlsx")
@@ -352,7 +547,7 @@ def brand_page_context(
     else:
         results = empty_results(rewards)
 
-    ctx = page_chrome(brand)
+    ctx = page_chrome(brand, user=request_user(request))
     ctx.update({
         "extra_cols": extra_cols_for(brand, skus_df),
         "months": months,
@@ -375,23 +570,13 @@ def brand_page_context(
 
 @app.get("/brands/{brand}", response_class=HTMLResponse)
 def brand_page(request: Request, brand: str, month: str | None = None, q: str | None = None):
-    brand = brand.lower()
-    if get_brand(brand) is None:
-        return TEMPLATES.TemplateResponse(
-            request,
-            "error.html",
-            {"title": "Unknown brand", "message": f"Unknown brand: {brand}"},
-            status_code=404,
-        )
+    brand, denied = require_brand(request, brand)
+    if denied:
+        return denied
 
     raw, state, error = load_orders_or_error()
     if error:
-        return TEMPLATES.TemplateResponse(
-            request,
-            "error.html",
-            {"title": "Data unavailable", "message": error},
-            status_code=503,
-        )
+        return error_page(request, "Data unavailable", error, 503)
 
     skus_df = enrich_skus(raw, load_brand_skus(brand))
     valid = set(skus_df["sku"].astype(str))
@@ -421,9 +606,12 @@ def brand_page(request: Request, brand: str, month: str | None = None, q: str | 
 
 @app.post("/brands/{brand}/refresh-orders")
 def refresh_brand_orders(request: Request, brand: str):
-    brand = brand.lower()
-    if get_brand(brand) is None:
-        return RedirectResponse(url="/", status_code=302)
+    brand, denied = require_brand(request, brand)
+    if denied:
+        return denied
+    operator_denied = require_operator(request)
+    if operator_denied:
+        return operator_denied
 
     skus_df = load_brand_skus(brand)
     sku_list = []
@@ -459,9 +647,9 @@ async def simulate_brand(
     bulk_value: int = Form(100),
     action: str = Form("simulate"),
 ):
-    brand = brand.lower()
-    if get_brand(brand) is None:
-        return RedirectResponse(url="/", status_code=302)
+    brand, denied = require_brand(request, brand)
+    if denied:
+        return denied
 
     form = await request.form()
     rewards = parse_reward_form(form)
@@ -505,12 +693,7 @@ async def simulate_brand(
 
     raw, state, error = load_orders_or_error()
     if error:
-        return TEMPLATES.TemplateResponse(
-            request,
-            "error.html",
-            {"title": "Data unavailable", "message": error},
-            status_code=503,
-        )
+        return error_page(request, "Data unavailable", error, 503)
 
     skus_df = enrich_skus(raw, load_brand_skus(brand))
     valid = set(skus_df["sku"].astype(str))
@@ -543,9 +726,9 @@ async def import_points(
     month: str = Form(""),
     file: UploadFile = File(...),
 ):
-    brand = brand.lower()
-    if get_brand(brand) is None:
-        return RedirectResponse(url="/", status_code=302)
+    brand, denied = require_brand(request, brand)
+    if denied:
+        return denied
 
     content = await file.read()
     points_map, error = parse_imported_points(content, file.filename or "upload.csv")
@@ -575,9 +758,9 @@ async def import_points(
 
 @app.get("/brands/{brand}/export")
 def export_skus(request: Request, brand: str):
-    brand = brand.lower()
-    if get_brand(brand) is None:
-        return RedirectResponse(url="/", status_code=302)
+    brand, denied = require_brand(request, brand)
+    if denied:
+        return denied
 
     raw, _state, error = load_orders_or_error()
     if error:
@@ -608,10 +791,10 @@ def _month_query(month: str, q: str = "") -> str:
 
 
 @app.get("/brands/{brand}/catalog.xlsx")
-def download_catalog(brand: str):
-    brand = brand.lower()
-    if get_brand(brand) is None:
-        return RedirectResponse(url="/", status_code=302)
+def download_catalog(request: Request, brand: str):
+    brand, denied = require_brand(request, brand)
+    if denied:
+        return denied
 
     records = load_catalog_skus(brand)
     df = catalog_download_frame(records)
@@ -632,9 +815,9 @@ async def preview_catalog_upload(
     month: str = Form(""),
     file: UploadFile = File(...),
 ):
-    brand = brand.lower()
-    if get_brand(brand) is None:
-        return RedirectResponse(url="/", status_code=302)
+    brand, denied = require_brand(request, brand)
+    if denied:
+        return denied
 
     content = await file.read()
     incoming, error = parse_catalog_file(content, file.filename or "catalog.xlsx")
@@ -645,7 +828,7 @@ async def preview_catalog_upload(
     existing = load_catalog_skus(brand)
     diff = diff_catalog(existing, incoming)
     payload = json.dumps(incoming, separators=(",", ":"))
-    ctx = page_chrome(brand)
+    ctx = page_chrome(brand, user=request_user(request))
     ctx.update({
         "month": month,
         "filename": file.filename or "upload",
@@ -665,9 +848,9 @@ async def confirm_catalog_upload(
     action: str = Form(...),
     payload: str = Form(...),
 ):
-    brand = brand.lower()
-    if get_brand(brand) is None:
-        return RedirectResponse(url="/", status_code=302)
+    brand, denied = require_brand(request, brand)
+    if denied:
+        return denied
 
     try:
         incoming = json.loads(payload)
@@ -711,6 +894,9 @@ def _create_error(request: Request, message: str, return_to: str):
 
 @app.post("/brands/create")
 async def create_brand_route(request: Request):
+    operator_denied = require_operator(request)
+    if operator_denied:
+        return operator_denied
     form = await request.form()
     label = str(form.get("label") or "").strip()
     slug = slugify(label)
@@ -749,3 +935,110 @@ async def create_brand_route(request: Request):
         return _create_error(request, f"A brand named '{label}' already exists.", return_to)
 
     return RedirectResponse(url=f"/brands/{slug}", status_code=303)
+
+
+def _users_page(request: Request, flash=None):
+    user = request_user(request)
+    ctx = page_chrome(user=user)
+    ctx.update({
+        "flash": flash if flash is not None else request.session.pop("flash", None),
+        "users": list_users(),
+        "all_brands": load_brands(),
+    })
+    return TEMPLATES.TemplateResponse(request, "users.html", ctx)
+
+
+@app.get("/users", response_class=HTMLResponse)
+def users_admin(request: Request):
+    denied = require_operator(request)
+    if denied:
+        return denied
+    return _users_page(request)
+
+
+@app.post("/users")
+async def create_user_route(request: Request):
+    denied = require_operator(request)
+    if denied:
+        return denied
+    form = await request.form()
+    email = str(form.get("email") or "").strip().lower()
+    password = str(form.get("password") or "")
+    role = str(form.get("role") or SUPPLIER_ROLE).strip().lower()
+    brands = [str(b) for b in form.getlist("brand")]
+    if role not in USER_ROLES:
+        role = SUPPLIER_ROLE
+    if not email or "@" not in email:
+        request.session["flash"] = "Enter a valid email address."
+        return RedirectResponse(url="/users", status_code=303)
+    if not password:
+        request.session["flash"] = "Password is required."
+        return RedirectResponse(url="/users", status_code=303)
+    try:
+        created = create_user(email, hash_password(password), role, brands=brands)
+    except DuplicateUserError:
+        request.session["flash"] = "That email already has an account."
+        return RedirectResponse(url="/users", status_code=303)
+    except ValueError:
+        request.session["flash"] = "Could not create that user. Check the email and role."
+        return RedirectResponse(url="/users", status_code=303)
+    if created["role"] == OPERATOR_ROLE:
+        request.session["flash"] = f"Created operator {created['email']}."
+    else:
+        assigned = ", ".join(created["brands"]) if created["brands"] else "no brands"
+        request.session["flash"] = f"Created supplier {created['email']} ({assigned})."
+    return RedirectResponse(url="/users", status_code=303)
+
+
+@app.post("/users/{user_id}")
+async def update_user_route(request: Request, user_id: int):
+    denied = require_operator(request)
+    if denied:
+        return denied
+    form = await request.form()
+    brands = [str(b) for b in form.getlist("brand")]
+    password = str(form.get("password") or "")
+    try:
+        target = get_user_by_id(user_id)
+        if target is None:
+            request.session["flash"] = "User not found."
+            return RedirectResponse(url="/users", status_code=303)
+        assigned = set_user_brands(user_id, brands)
+        if password:
+            set_user_password(user_id, hash_password(password))
+        if target["role"] == OPERATOR_ROLE:
+            msg = f"Updated {target['email']}."
+        else:
+            labels = ", ".join(assigned) if assigned else "no brands"
+            msg = f"Updated {target['email']} ({labels})."
+        if password:
+            msg = msg.rstrip(".") + " and set a new password."
+        request.session["flash"] = msg
+    except KeyError:
+        request.session["flash"] = "User not found."
+    except ValueError:
+        request.session["flash"] = "Could not update that user."
+    return RedirectResponse(url="/users", status_code=303)
+
+
+@app.post("/users/{user_id}/delete")
+async def delete_user_route(request: Request, user_id: int):
+    denied = require_operator(request)
+    if denied:
+        return denied
+    me = request_user(request)
+    try:
+        target = get_user_by_id(user_id)
+        if target is None:
+            request.session["flash"] = "User not found."
+            return RedirectResponse(url="/users", status_code=303)
+        if me and target["id"] == me["id"]:
+            request.session["flash"] = "You cannot delete the account you are signed in with."
+            return RedirectResponse(url="/users", status_code=303)
+        delete_user(user_id)
+        request.session["flash"] = f"Deleted {target['email']}."
+    except KeyError:
+        request.session["flash"] = "User not found."
+    except ValueError:
+        request.session["flash"] = "Keep at least one operator account."
+    return RedirectResponse(url="/users", status_code=303)

@@ -20,8 +20,21 @@
         <a href="/brands/{{ key }}" class="{% if brand == key %}active{% endif %}">{{ meta.label }}</a>
         {% endfor %}
       </nav>
+      {% if is_operator %}
       <button type="button" class="button secondary" id="new-brand-open">New brand</button>
+      {% endif %}
     </div>
+    {% if user_email %}
+    <div class="session-meta">
+      <span class="session-email">{{ user_email }}</span>
+      {% if is_operator %}
+      <a href="/users" class="session-link{% if request.url.path.startswith('/users') %} active{% endif %}">Users</a>
+      {% endif %}
+      <form method="post" action="/logout" class="logout-form">
+        <button type="submit" class="button secondary">Log out</button>
+      </form>
+    </div>
+    {% endif %}
   </header>
   <main class="container">
     {% if flash %}
@@ -30,6 +43,7 @@
     {% block content %}{% endblock %}
   </main>
 
+  {% if is_operator %}
   <dialog id="new-brand-dialog">
     <form method="post" action="/brands/create" enctype="multipart/form-data" class="new-brand-form" id="new-brand-form">
       <h2>New brand</h2>
@@ -112,6 +126,7 @@
       {% endif %}
     })();
   </script>
+  {% endif %}
   <script src="/static/tables.js"></script>
 </body>
 </html>

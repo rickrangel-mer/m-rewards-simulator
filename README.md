@@ -18,9 +18,14 @@ First run (empty `refresh_state`) backfills the last 6 complete months. Set `REF
 ```bash
 pip install -r requirements.txt
 export DATABASE_URL=postgresql://...
+export SESSION_SECRET=dev-secret-change-me
+export OPERATOR_EMAIL=you@mercaso.com
+export OPERATOR_PASSWORD=choose-a-password
 python refresh_orders.py          # requires AWS creds + Athena access
 uvicorn app:app --reload --port 8080
 ```
+
+`OPERATOR_EMAIL` / `OPERATOR_PASSWORD` create the first operator only when `users` is empty. `pytest` does not need Railway or Athena.
 
 Optional local analysis (reads Postgres, writes gitignored CSV dumps):
 
@@ -44,8 +49,11 @@ Add Railway Postgres. Both services should receive `DATABASE_URL` (Railway does 
 
 - Start command comes from `railway.toml` (`sh start.sh` → FastAPI/uvicorn by default).
 - Env: `DATABASE_URL`. Do **not** set `SERVICE_ROLE`.
-- Optional: `SESSION_SECRET` (any long random string) for form session cookies.
-- Optional (needed for **Pull order history** on a brand page): the same Athena AWS vars as the cron service (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `ATHENA_S3_STAGING`). The monthly cron still refreshes every catalog SKU; the button pulls only that brand's SKUs.
+- Required: `SESSION_SECRET` (a long random string) for signed login cookies.
+- First deploy only: `OPERATOR_EMAIL` and `OPERATOR_PASSWORD`. If the `users` table is empty, the web app creates that operator on boot. It does **not** reset an existing operator on later deploys. Copy the password into a password manager; there is no reset email.
+- Optional (needed for **Pull order history** on a brand page): the same Athena AWS vars as the cron service (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `ATHENA_S3_STAGING`). The monthly cron still refreshes every catalog SKU; the button pulls only that brand's SKUs. **Pull order history** and **New brand** are operator-only.
+
+The site is not public. Unauthenticated visitors are sent to `/login`. Operators see every brand plus a **Users** page to create suppliers and assign brand slugs. Suppliers only see the brands assigned to them; other brand URLs return 404.
 
 Generate a public domain on the web service (Settings → Networking).
 

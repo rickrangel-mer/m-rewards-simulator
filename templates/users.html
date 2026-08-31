@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Users — M-Rewards Simulator{% endblock %}
+{% block content %}
+<h1>Users</h1>
+<p class="section-caption">Operators see every brand. Suppliers see only the brands you assign. Copy the password to the supplier; there is no reset email.</p>
+
+<section class="panel" id="create-user">
+  <h2>Add user</h2>
+  <form method="post" action="/users" class="user-create-form">
+    <label>
+      Email
+      <input type="email" name="email" required autocomplete="off" />
+    </label>
+    <label>
+      Password
+      <input type="text" name="password" required autocomplete="off" />
+    </label>
+    <label>
+      Role
+      <select name="role">
+        <option value="supplier" selected>Supplier</option>
+        <option value="operator">Operator</option>
+      </select>
+    </label>
+    <fieldset class="brand-checks">
+      <legend>Assigned brands (suppliers)</legend>
+      {% for row in all_brands %}
+      <label class="check-row">
+        <input type="checkbox" name="brand" value="{{ row.slug }}" />
+        {{ row.label }}
+      </label>
+      {% endfor %}
+    </fieldset>
+    <button type="submit" class="button primary">Create user</button>
+  </form>
+</section>
+
+<section class="panel" id="user-list">
+  <h2>Accounts</h2>
+  <div class="table-wrap user-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Brands</th>
+          <th>Password</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for account in users %}
+        <tr>
+          <td>{{ account.email }}</td>
+          <td>{{ account.role }}</td>
+          <td colspan="3">
+            <form method="post" action="/users/{{ account.id }}" class="user-row-form">
+              {% if account.role == 'operator' %}
+              <p class="section-caption">All brands</p>
+              {% else %}
+              <div class="brand-checks inline">
+                {% for row in all_brands %}
+                <label class="check-row">
+                  <input type="checkbox" name="brand" value="{{ row.slug }}"
+                         {% if row.slug in account.brands %}checked{% endif %} />
+                  {{ row.label }}
+                </label>
+                {% endfor %}
+              </div>
+              {% endif %}
+              <div class="user-row-actions">
+                <label>
+                  New password (optional)
+                  <input type="text" name="password" autocomplete="off" />
+                </label>
+                <button type="submit" class="button secondary">Save</button>
+              </div>
+            </form>
+            {% if account.email != user_email %}
+            <form method="post" action="/users/{{ account.id }}/delete" class="user-delete-form"
+                  onsubmit="return confirm('Delete {{ account.email }}?');">
+              <button type="submit" class="button danger">Delete</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">No users yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

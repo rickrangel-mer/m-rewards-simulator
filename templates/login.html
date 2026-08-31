@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in — M-Rewards Simulator</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <h1>M-Rewards Simulator</h1>
+    <p class="section-caption">Sign in with the email and password Mercaso assigned you.</p>
+    {% if not operator_configured %}
+    <div class="error-msg">The operator account is not configured. Set OPERATOR_EMAIL and OPERATOR_PASSWORD on the web service, then restart.</div>
+    {% endif %}
+    {% if flash %}
+    <div class="flash">{{ flash }}</div>
+    {% endif %}
+    <form method="post" action="/login" class="login-form">
+      <input type="hidden" name="next" value="{{ next or '/' }}" />
+      <label>
+        Email
+        <input type="email" name="email" value="{{ email or '' }}" autocomplete="username" required />
+      </label>
+      <label>
+        Password
+        <input type="password" name="password" autocomplete="current-password" required />
+      </label>
+      <button type="submit" class="button primary">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>

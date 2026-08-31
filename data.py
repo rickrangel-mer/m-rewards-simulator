@@ -73,7 +73,29 @@ CREATE TABLE IF NOT EXISTS brands (
     theme      text        NOT NULL DEFAULT 'default',
     sort       int         NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id             serial      PRIMARY KEY,
+    email          text        NOT NULL UNIQUE,
+    password_hash  text        NOT NULL,
+    role           text        NOT NULL,
+    created_at     timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_brands (
+    user_id  int   NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    brand    text  NOT NULL,
+    PRIMARY KEY (user_id, brand)
+);
 """
+
+OPERATOR_ROLE = "operator"
+SUPPLIER_ROLE = "supplier"
+USER_ROLES = (OPERATOR_ROLE, SUPPLIER_ROLE)
+
+
+class DuplicateUserError(ValueError):
+    """Raised when inserting a user email that already exists."""
 
 CATALOG_BRANDS = ("coca-cola", "monster", "ferrera")
 CATALOG_EXTRA_COLS = ("size", "brand", "category")
@@ -83,6 +105,282 @@ PALETTE_THEMES = ("coca-cola", "monster", "ferrera", "default")
 
 class DuplicateBrandError(ValueError):
     """Raised when inserting a brand slug that already exists in the registry."""
+
+
+def hash_password(password: str) -> str:
+    import bcrypt
+
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    import bcrypt
+
+    if not password or not password_hash:
+        return False
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
+def _public_user(user_id: int, email: str, role: str, brands: list[str] | None = None) -> dict:
+    return {
+        "id": int(user_id),
+        "email": str(email),
+        "role": str(role),
+        "brands": list(brands or []),
+    }
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _valid_email(email: str) -> bool:
+    return bool(email) and "@" in email and " " not in email
+
+
+def count_users(conn=None) -> int:
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM users")
+            return int(cur.fetchone()[0])
+    finally:
+        if close:
+            conn.close()
+
+
+def _brands_for_user(user_id: int, conn) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT brand FROM user_brands WHERE user_id = %s ORDER BY brand",
+            (user_id,),
+        )
+        return [str(row[0]) for row in cur.fetchall()]
+
+
+def get_user_by_id(user_id: int, conn=None) -> dict | None:
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, email, role FROM users WHERE id = %s",
+                (int(user_id),),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        uid, email, role = row
+        brands = _brands_for_user(int(uid), conn) if str(role) == SUPPLIER_ROLE else []
+        return _public_user(uid, email, role, brands)
+    finally:
+        if close:
+            conn.close()
+
+
+def get_user_by_email(email: str, conn=None) -> dict | None:
+    """Lookup for login. Includes password_hash; do not put this dict in templates."""
+    email = _normalize_email(email)
+    if not email:
+        return None
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, email, password_hash, role FROM users WHERE email = %s",
+                (email,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        uid, stored_email, password_hash, role = row
+        brands = _brands_for_user(int(uid), conn) if str(role) == SUPPLIER_ROLE else []
+        user = _public_user(uid, stored_email, role, brands)
+        user["password_hash"] = str(password_hash)
+        return user
+    finally:
+        if close:
+            conn.close()
+
+
+def list_users(conn=None) -> list[dict]:
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, email, role, created_at FROM users ORDER BY email"
+            )
+            rows = cur.fetchall()
+            cur.execute("SELECT user_id, brand FROM user_brands ORDER BY user_id, brand")
+            brand_rows = cur.fetchall()
+        brands_by_user: dict[int, list[str]] = {}
+        for user_id, brand in brand_rows:
+            brands_by_user.setdefault(int(user_id), []).append(str(brand))
+        users = []
+        for uid, email, role, created_at in rows:
+            users.append({
+                **_public_user(uid, email, role, brands_by_user.get(int(uid), [])),
+                "created_at": created_at,
+            })
+        return users
+    finally:
+        if close:
+            conn.close()
+
+
+def _filter_known_brands(brands: list[str], conn) -> list[str]:
+    registry = {row["slug"] for row in load_brands(conn=conn)}
+    seen = set()
+    out = []
+    for slug in brands:
+        slug = str(slug or "").strip().lower()
+        if slug in registry and slug not in seen:
+            out.append(slug)
+            seen.add(slug)
+    return out
+
+
+def create_user(
+    email: str,
+    password_hash: str,
+    role: str,
+    brands: list[str] | None = None,
+    conn=None,
+) -> dict:
+    from psycopg2 import IntegrityError
+    from psycopg2.extras import execute_values
+
+    email = _normalize_email(email)
+    if not _valid_email(email):
+        raise ValueError("invalid email")
+    if role not in USER_ROLES:
+        raise ValueError("invalid role")
+    if not password_hash:
+        raise ValueError("password hash required")
+
+    conn, close = _borrow_connection(conn)
+    try:
+        assigned = [] if role == OPERATOR_ROLE else _filter_known_brands(list(brands or []), conn)
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "INSERT INTO users (email, password_hash, role) "
+                    "VALUES (%s, %s, %s) RETURNING id, email, role",
+                    (email, password_hash, role),
+                )
+            except IntegrityError as exc:
+                conn.rollback()
+                raise DuplicateUserError(email) from exc
+            row = cur.fetchone()
+            user_id = int(row[0])
+            if assigned:
+                execute_values(
+                    cur,
+                    "INSERT INTO user_brands (user_id, brand) VALUES %s",
+                    [(user_id, slug) for slug in assigned],
+                )
+        conn.commit()
+        return _public_user(user_id, email, role, assigned)
+    except DuplicateUserError:
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if close:
+            conn.close()
+
+
+def set_user_brands(user_id: int, brands: list[str], conn=None) -> list[str]:
+    from psycopg2.extras import execute_values
+
+    conn, close = _borrow_connection(conn)
+    try:
+        user = get_user_by_id(user_id, conn=conn)
+        if user is None:
+            raise KeyError(user_id)
+        assigned = [] if user["role"] == OPERATOR_ROLE else _filter_known_brands(list(brands or []), conn)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM user_brands WHERE user_id = %s", (int(user_id),))
+            if assigned:
+                execute_values(
+                    cur,
+                    "INSERT INTO user_brands (user_id, brand) VALUES %s",
+                    [(int(user_id), slug) for slug in assigned],
+                )
+        conn.commit()
+        return assigned
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if close:
+            conn.close()
+
+
+def set_user_password(user_id: int, password_hash: str, conn=None) -> None:
+    if not password_hash:
+        raise ValueError("password hash required")
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET password_hash = %s WHERE id = %s",
+                (password_hash, int(user_id)),
+            )
+            if cur.rowcount == 0:
+                conn.rollback()
+                raise KeyError(user_id)
+        conn.commit()
+    finally:
+        if close:
+            conn.close()
+
+
+def delete_user(user_id: int, conn=None) -> None:
+    conn, close = _borrow_connection(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM users WHERE role = %s",
+                (OPERATOR_ROLE,),
+            )
+            operator_count = int(cur.fetchone()[0])
+            cur.execute("SELECT role FROM users WHERE id = %s", (int(user_id),))
+            row = cur.fetchone()
+            if not row:
+                raise KeyError(user_id)
+            if str(row[0]) == OPERATOR_ROLE and operator_count <= 1:
+                raise ValueError("cannot delete the last operator")
+            cur.execute("DELETE FROM users WHERE id = %s", (int(user_id),))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if close:
+            conn.close()
+
+
+def bootstrap_operator(conn=None) -> dict | None:
+    """Create the first operator from OPERATOR_EMAIL + OPERATOR_PASSWORD when users is empty.
+
+    Does not reset an existing operator on later boots. Returns the created user or None.
+    """
+    conn, close = _borrow_connection(conn)
+    try:
+        if count_users(conn=conn) > 0:
+            return None
+        email = _normalize_email(os.environ.get("OPERATOR_EMAIL", ""))
+        password = os.environ.get("OPERATOR_PASSWORD") or ""
+        if not _valid_email(email) or not password:
+            return None
+        return create_user(email, hash_password(password), OPERATOR_ROLE, conn=conn)
+    finally:
+        if close:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +835,7 @@ def ensure_schema() -> bool:
         init_schema(conn)
         seed_brand_registry(conn)
         seed_brand_catalogs(conn)
+        bootstrap_operator(conn)
         return True
     finally:
         conn.close()
