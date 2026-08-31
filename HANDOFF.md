@@ -1,9 +1,9 @@
-# Handoff: Create a new brand from a modal (P4)
+# Handoff: Login and supplier brand access (P5)
 
 **Owner:** Rick (PM)  
 **Repo:** `rickrangel-mer/m-rewards-simulator`  
 **Product list:** [`backlog.md`](backlog.md)  
-**This brief:** P4 only. Do not reintroduce Streamlit. Do not change `start.sh` web vs `SERVICE_ROLE=refresh`. Do not add logos. Do not trigger Athena from the website.
+**This brief:** P5 only. Do not reintroduce Streamlit. Do not change `start.sh` web vs `SERVICE_ROLE=refresh`. Do not add logos. Do not add OAuth, SSO, or email sending.
 
 ---
 
@@ -12,102 +12,139 @@
 | Item | Status |
 |---|---|
 | **P0** proposed points + rewards in Postgres | **On `main`** — [PR #6](https://github.com/rickrangel-mer/m-rewards-simulator/pull/6) |
-| **P1** web-managed SKU catalogs (`brand_skus`) | **On `main`** — landed via [PR #9](https://github.com/rickrangel-mer/m-rewards-simulator/pull/9) (rebase of #7 onto `main`) |
-| **P2** store-inclusion review | **On `main`** — [PR #9](https://github.com/rickrangel-mer/m-rewards-simulator/pull/9). Denominator is **A** (current-month brand orderers). `SUM(li.initial_quantity)` stays. Caption + tests. Athena SQL unchanged. |
+| **P1** web-managed SKU catalogs (`brand_skus`) | **On `main`** — landed via [PR #9](https://github.com/rickrangel-mer/m-rewards-simulator/pull/9) |
+| **P2** store-inclusion review | **On `main`** — [PR #9](https://github.com/rickrangel-mer/m-rewards-simulator/pull/9) |
 | **P3** per-brand color | **On `main`** — [PR #9](https://github.com/rickrangel-mer/m-rewards-simulator/pull/9), palettes [PR #10](https://github.com/rickrangel-mer/m-rewards-simulator/pull/10), two-color split [PR #11](https://github.com/rickrangel-mer/m-rewards-simulator/pull/11) |
-| **P4** | This handoff |
+| **P4** New brand from a modal + registry | **On `main`** — [PR #13](https://github.com/rickrangel-mer/m-rewards-simulator/pull/13), slug/template [PR #14](https://github.com/rickrangel-mer/m-rewards-simulator/pull/14) |
+| **Follow-ups on `main`** | Uncap points [#15](https://github.com/rickrangel-mer/m-rewards-simulator/pull/15), import 422 [#16](https://github.com/rickrangel-mer/m-rewards-simulator/pull/16), **Pull order history** [#17](https://github.com/rickrangel-mer/m-rewards-simulator/pull/17), sortable tables [#18](https://github.com/rickrangel-mer/m-rewards-simulator/pull/18) |
+| **P5** | This handoff |
 
-**Start from `origin/main`.** Catalogs, proposed points, rewards, and the three brand palettes are already there. Nav and `load_brand_skus` still key off hardcoded [`BRAND_DEFAULTS`](simulator.py) / [`CATALOG_BRANDS`](data.py) (`coca-cola`, `monster`, `ferrera`). That is the P4 problem.
+**Start from `origin/main`.** The website is a public FastAPI app with **no login**. Anyone with the Railway URL can open every brand, edit proposed points, replace catalogs, create brands, and (if AWS env is on the web service) pull Athena. That is the P5 problem.
+
+Session cookies already exist ([`SessionMiddleware`](app.py)) for flash messages only. `SESSION_SECRET` is optional today.
 
 ---
 
 ## What this product is
 
-Internal simulator for Mercaso M-Rewards. For a brand, pick a month of historical orders, set points per SKU and reward thresholds, and see how many stores would earn each reward.
+Internal Mercaso M-Rewards simulator. Operators pick a brand, a month of orders, SKU points, and reward cutoffs, and see how many stores would earn each reward.
 
-**Data path:**
-- Order snapshots in Railway Postgres (`orders`, `refresh_state`)
-- Monthly Athena pull via cron (`SERVICE_ROLE=refresh` → `refresh_orders.py`)
-- Web app never talks to Athena
-- FastAPI + Jinja2; sectioned brand page (month+results, SKU tools, reward thresholds)
-- SKU lists live in `brand_skus`; Excel is bulk-edit (upload/download), not live config
+Rick now wants to **share the simulator with some suppliers**. A supplier must **only see the brand(s) Mercaso assigns to them**. A Coca-Cola supplier must not see Monster or Ferrera in the nav, and must not open those pages by URL.
+
+**Data path (unchanged):**
+- Orders in Railway Postgres (`orders`, `refresh_state`)
+- Monthly Athena cron (`SERVICE_ROLE=refresh` → `refresh_orders.py`)
+- Brand page **Pull order history** ([PR #17](https://github.com/rickrangel-mer/m-rewards-simulator/pull/17)) queries Athena for **that brand’s SKUs only**
+- FastAPI + Jinja2; sectioned brand page; catalogs in `brand_skus`; nav from the `brands` registry
 
 ---
 
-## P4 — New brand from a modal (not a code template)
+## P5 — Login and roles so suppliers only see assigned brands
 
-Rick’s wording: **“template” means a modal** that lets an operator create a new brand page. It is **not** a developer copy-paste of `BRAND_DEFAULTS` and a new git xlsx.
+Two roles:
 
-There is no new-brand UI today. Adding a fourth brand requires a code change (`BRAND_DEFAULTS`, `CATALOG_BRANDS`, `load_brand_skus` / seed, nav loop in [`templates/base.html`](templates/base.html)). After P4, an operator should do it from the website.
+| Role | Who | What they see | What they can do |
+|---|---|---|---|
+| **operator** | Mercaso | Every brand in the registry | Current full app: brand pages, New brand, catalog merge/replace, Pull order history, plus a **Users** page to create suppliers and assign brands |
+| **supplier** | External partner | **Only assigned brand slug(s)** | Use that brand’s page (simulate, proposed points, rewards, catalog upload/download for **that brand**). No New brand. No Users. No Pull order history. Direct URLs to other brands act like unknown brand (**404**, do not say “you cannot access Monster”). |
 
-### What the modal must collect
+One supplier can be assigned **one or more** brands (a candy supplier might get Ferrera only; later they might get a second slug). Operators do not need a brand list; they see all.
 
-Show a short **requirements list** in the modal so the operator knows what is needed before submit. Required:
+**Same Postgres rows.** Supplier edits to Coca-Cola proposed points / rewards / catalog are the live brand data, same as an operator editing Coca-Cola. There are no per-user drafts.
 
-| Field | Notes |
+### Auth model (keep it small)
+
+Email + password in Postgres. No Google login, no Auth0, no magic links, no SMTP.
+
+| Table | Purpose |
 |---|---|
-| **Display name** | e.g. `Pepsi`. Shown in the nav and `<h1>`. |
-| **URL slug** | e.g. `pepsi`. Lowercase `[a-z0-9-]+`. Unique. Prefill from the display name; operator can edit. Must not collide with `coca-cola` / `monster` / `ferrera` or another saved brand. |
-| **Participating SKUs Excel/CSV** | Canonical catalog upload: `sku`, `product_title`, `current_points` (optional `size`, `brand`, `category`). Reuse [`parse_catalog_file()`](data.py). Same format as **Download catalog Excel** on an existing brand page. This is the participating-SKU list for simulation and for the next Athena refresh (`load_all_skus()`). |
-| **At least one reward** | Name + point cutoff (same idea as the Reward Thresholds section). One row is enough; allow adding more in the modal. |
+| `users` | `id`, `email` (unique, stored lowercase), `password_hash`, `role` (`operator` \| `supplier`), `created_at` |
+| `user_brands` | `(user_id, brand)` where `brand` is a registry slug. Operators ignore this table. |
 
-Optional:
+Hash passwords with **bcrypt** (add a dependency). Do not store plaintext. Do not log passwords.
 
-| Field | Notes |
-|---|---|
-| **Palette** | Reuse a P3 theme: Coca-Cola (red/white), Monster (black + lime), Ferrera/Nerds (pink/purple/blue), or default teal. Do **not** invent a hex picker. |
+**Bootstrap:** if `users` is empty and `OPERATOR_EMAIL` + `OPERATOR_PASSWORD` are set, `ensure_schema()` (or first web boot) creates that operator. If the table is empty and those env vars are missing, the login page must say the operator account is not configured — **do not leave the app open unauthenticated**.
 
-Do **not** require a git workbook. Do **not** ask for a logo.
+Document the new env vars in [`README.md`](README.md) under the web service:
 
-### After save
+- `SESSION_SECRET` — required for signed cookies (stop using the hardcoded default once login exists)
+- `OPERATOR_EMAIL` / `OPERATOR_PASSWORD` — first operator only (create-if-empty; do not reset an existing operator on every boot)
 
-1. Persist the brand in a **Postgres registry** (new `brands` table or equivalent: slug, label, theme, sort).
-2. Write the uploaded catalog to `brand_skus` for that slug (same path as catalog replace).
-3. Write the reward name(s) + cutoff(s) to `brand_rewards`.
-4. Nav in [`templates/base.html`](templates/base.html) lists **registry brands**, not `BRAND_DEFAULTS` keys.
-5. Redirect to `/brands/<slug>`. The page uses the **existing** sectioned [`templates/brand.html`](templates/brand.html) (month + results, SKU tools, reward thresholds). No new simulator layout.
-6. Seed the original three brands into the registry on boot if it is empty (from `BRAND_DEFAULTS`), so Coca-Cola / Monster / Ferrera keep working without a manual migrate.
+Operator creates supplier accounts in the UI and copies the password to the supplier. No “forgot password” email.
 
-### Simulation / Athena
+### Login UX
 
-- Website still never talks to Athena.
-- `refresh_orders.py` already uses `load_all_skus()` over `brand_skus`. New participating SKUs are included on the **next** cron (or a manual refresh job).
-- If the uploaded SKUs already exist in `orders` (they were on another brand’s catalog, or a previous pull), the new page can simulate immediately.
-- If they are net-new SKUs, the brand page exists but results stay empty until refresh. Say that in the modal (one line under the SKU upload). Do **not** add a “Run Athena” button.
+- `/login` — email + password. Unauthenticated visitors of any other HTML page redirect here (keep `?next=` only if it is a same-origin path).
+- Successful login: session stores user id (not the password). Redirect to `/` or `next`.
+- `/` today always goes to Coca-Cola. Change it to the **first assigned brand** (operators: first registry brand, same as today). Supplier with no brands: a simple “No brands assigned” page, not Coca-Cola.
+- Logout in the topbar. Clears the session.
+- Show the signed-in email in the topbar. Operators also get a **Users** link. Hide **New brand** for suppliers.
 
-### Theme hook (needed so a fourth slug is not stuck on teal)
+Allow without a session: `GET /health`, `/login`, `/static/*`. Everything else, including `/catalog-template.xlsx` and every `/brands/...` GET/POST, requires a session.
 
-Today CSS is `body[data-brand="coca-cola"]` etc. A new slug will not match. Smallest fix: set `data-theme="{{ theme }}"` on `<body>` (existing three map 1:1: `coca-cola` / `monster` / `ferrera`) and point the P3 blocks at `body[data-theme="..."]`. Keep `data-brand="{{ brand }}"` for tests and debugging. Default / unknown theme stays `:root` teal.
+### Enforce on the server
 
-### UX sketch
+Nav filtering is not enough. Check the current user on **every** brand route, including POST:
 
-- **New brand** control in the topbar next to the brand nav (every page that uses [`templates/base.html`](templates/base.html)).
-- Native `<dialog>` (or equivalent). No React, no Streamlit. A few lines of JS to `.showModal()` is fine.
-- One modal, not a multi-step wizard. Checklist of requirements at the top, then the fields, then Create.
-- Validate server-side: missing file, catalog parse error, empty name, bad/duplicate slug, zero rewards → flash and stay put (re-open modal or redirect with flash).
-- Existing catalog **Preview / Merge / Replace** on the brand page stays for later edits. The create modal can write the catalog in one shot (replace into empty).
+- [`GET /brands/{brand}`](app.py)
+- `POST /brands/{brand}/simulate`
+- `POST /brands/{brand}/import`
+- `GET /brands/{brand}/export`
+- `GET /brands/{brand}/catalog.xlsx`
+- `POST /brands/{brand}/catalog` and `/catalog/confirm`
+- `POST /brands/{brand}/refresh-orders` — **operators only** (Athena). Suppliers get 403/404 even on a brand they can view.
+- `POST /brands/create` and the New brand dialog — **operators only**
+- Users admin routes — **operators only**
 
-### Implementation notes
+Put the helper next to [`page_chrome()`](app.py): `allowed_brands(user)` and `can_access_brand(user, slug)`. [`page_chrome()`](app.py) must list **only allowed brands** so suppliers never get other labels in the nav. [`templates/error.html`](templates/error.html) “Back to simulator” must not send a supplier to Coca-Cola if they cannot see it.
 
-- Replace hardcoded `if brand not in BRAND_DEFAULTS` gates with “slug in registry.”
-- `CATALOG_BRANDS` / `seed_brand_catalogs()` should keep seeding **only** the original three git xlsx files. New brands are operator-uploaded, never seeded from git.
-- `extra_cols` already comes from catalog columns when present ([`extra_cols_for()`](app.py)); new brands do not need a hardcoded extra-col list.
-- Default rewards in `BRAND_DEFAULTS` remain fallbacks for the original three if `brand_rewards` is empty. A newly created brand always has the rewards from the modal.
-- Flash stays on the session cookie. Registry / catalogs / rewards stay in Postgres.
-- Keep layout/sectioning. Keep the P3 palettes. Keep store-inclusion captions.
+### Users admin (operators)
 
-### P4 tests
+A small Jinja page, same FastAPI style. Not a separate app.
 
-- Prefer the existing FakeStore pattern in [`test_app.py`](test_app.py). No live Railway or Athena.
-- GET a brand page → modal markup includes the requirements (display name, slug, SKU Excel, at least one reward).
-- POST a valid create → registry + catalog + rewards stored; nav lists the new label; `GET /brands/<slug>` is 200 and still sectioned (`simulation-results`, `sku-points`, `reward-thresholds`).
-- Missing SKU file / unparseable Excel / duplicate slug / no reward → 4xx or redirect+flash; no half-written brand.
-- Coca-Cola / Monster / Ferrera still render sectioned; `data-brand` still present; existing catalog upload tests still pass.
+- List users (email, role, assigned brands)
+- Create supplier: email, password, one or more brand checkboxes from the registry
+- Edit assignments (add/remove brand slugs)
+- Optional: delete or set a new password for a supplier
+- Do not allow a supplier to create users
+- Creating a second operator is OK (same form, role select) so Mercaso is not a single account
+
+Validate that assigned slugs exist in `brands`.
+
+---
+
+## Implementation notes
+
+- FastAPI + Jinja2 only. A login template + users template. A few lines of existing session JS patterns is fine; no React.
+- Middleware or a shared dependency is better than copying `if not user` into every route. Tests need one **autouse fixture** that signs in an operator (or patches `current_user`) so existing [`test_app.py`](test_app.py) cases keep working.
+- Extend [`SCHEMA_SQL`](data.py) / `ensure_schema()` the same way P0/P4 added tables. No manual Railway migrate.
+- Cron / `refresh_orders.py` has no HTTP users. Do not add login there.
+- FakeStore in tests should grow `users` / `user_brands` (or a sibling fake) so supplier tests do not need Postgres.
+- `SESSION_SECRET`: fail closed in production if unset, or keep the default **only** when `OPERATOR_*` is unset **and** this is pytest. Prefer: tests set `SESSION_SECRET=test`.
+- Overlapping SKUs (Coca-Cola’s catalog includes some Monster drinks) stay as they are. P5 isolates **brand pages**, not SKU rows inside a catalog.
+
+---
+
+## P5 tests
+
+No live Railway or Athena.
+
+- Unauthenticated `GET /brands/coca-cola` → redirect to `/login` (not 200).
+- Operator session: Coca-Cola, Monster, Ferrera, New brand, Pull order history still work.
+- Supplier assigned `ferrera` only: nav has Ferrera, not Coca-Cola/Monster; `GET /brands/ferrera` is 200; `GET /brands/coca-cola` is 404; `POST /brands/create` is denied; `POST /brands/ferrera/refresh-orders` is denied.
+- Supplier with two brands sees both in nav.
+- Supplier with zero brands does not land on Coca-Cola.
+- Login with wrong password stays on `/login` with a flash. Do not reveal whether the email exists.
+- Existing FakeStore catalog / simulate / create-brand tests still pass via the operator autouse fixture.
 - `pytest` green.
 
-### P4 out of scope
+---
 
-Deleting or renaming a brand, uploading logos, hex color picker, auth, Streamlit, changing `start.sh`, calling Athena from the web, a fourth git Excel workbook, a separate “brand CMS” site.
+## P5 out of scope
+
+OAuth / SSO / Google login, magic links, SMTP, 2FA, “forgot password” email, per-SKU or per-store permissions, hiding SKUs that appear on another brand’s catalog, read-only suppliers, deleting brands, logos, Streamlit, changing `start.sh`, a fourth git Excel workbook.
+
+If Rick later wants suppliers **read-only** (view simulation, no point/catalog edits), that is a follow-up. This brief is **visibility**: they may use the assigned brand page, they may not see other brands.
 
 ---
 
@@ -115,38 +152,39 @@ Deleting or renaming a brand, uploading logos, hex color picker, auth, Streamlit
 
 - FastAPI + Jinja2 only.
 - `pytest` must pass without a real Railway DB or Athena.
-- Smoke `coca-cola`, `monster`, `ferrera` plus the new slug in tests.
+- Smoke `coca-cola`, `monster`, `ferrera` plus a supplier who can see only one of them.
 - Do not edit git Excel workbooks as live config.
 
 ---
 
 ## Suggested order
 
-1. `brands` registry + seed the original three + `data-theme` so palettes are reusable.
-2. Swap nav / `brand not in BRAND_DEFAULTS` to the registry.
-3. Topbar **New brand** + `<dialog>` with the requirements list and fields.
-4. POST handler: parse catalog, save registry + `brand_skus` + `brand_rewards`, redirect.
-5. Tests, `pytest`, commit, push, open a PR.
+1. `users` + `user_brands` schema, bcrypt, seed first operator from env.
+2. `/login`, `/logout`, session user, redirect unauthenticated HTML to login. `/health` stays public.
+3. Filter nav + 404 other brands. `/` → first allowed brand.
+4. Operator-only: New brand, Pull order history, Users admin (create supplier, assign brands).
+5. Tests (autouse operator + new supplier isolation cases), README env vars, `pytest`, commit, push, open a PR.
 
 ---
 
 ## Acceptance
 
-1. Operator opens **New brand**, sees the requirements (including participating SKUs Excel), fills them, and gets a new nav item + sectioned brand page without a code change.
-2. Coca-Cola / Monster / Ferrera still work; no Streamlit; `start.sh` roles unchanged.
-3. New SKUs are in `brand_skus` (and therefore the next Athena `load_all_skus()`). The UI explains they will not simulate until orders for those SKUs exist in Postgres.
-4. Palette choice reuses P3 themes via `data-theme`. Layout/sectioning unchanged.
+1. With the Railway URL, a logged-out visitor cannot open a brand page.
+2. An operator still sees every brand, can create brands, and can pull order history.
+3. A supplier assigned only Ferrera sees Ferrera and cannot open Coca-Cola or Monster by clicking or by typing the URL.
+4. Mercaso can add a supplier (email, password, brand checkboxes) without a code change.
+5. No Streamlit; `start.sh` roles unchanged; cron still has no login.
 
 ---
 
 ## Paste-ready agent prompt
 
 ```
-Read HANDOFF.md and implement P4 only.
+Read HANDOFF.md and implement P5 only.
 
-Baseline: origin/main. P0–P3 are on main (catalogs, store-inclusion A, per-brand colors). Do not change start.sh web vs SERVICE_ROLE=refresh. Do not reintroduce Streamlit. Do not add logos. Do not call Athena from the web.
+Baseline: origin/main. P0–P4 are on main (including New brand registry and Pull order history). Do not change start.sh web vs SERVICE_ROLE=refresh. Do not reintroduce Streamlit. Do not add OAuth, SSO, email, or logos.
 
-P4: “Template” means an operator modal, not a developer code template. Add a New brand control that opens a modal listing requirements: display name, URL slug, participating SKUs Excel/CSV (canonical sku / product_title / current_points, reuse parse_catalog_file), and at least one reward name + cutoff. Optional: pick an existing P3 palette (coca-cola / monster / ferrera / default). Persist a Postgres brand registry; seed the original three if empty. Nav reads the registry. Redirect to /brands/<slug> using the existing sectioned brand.html. New SKUs appear in simulations after the next Athena refresh (or immediately if those SKUs already have rows in orders). Point CSS at data-theme so a new slug can reuse palettes.
+P5: the site is public today. Add email/password login (bcrypt, Postgres users + user_brands). Roles: operator (all brands, current app + Users admin) and supplier (only assigned brand slugs). Nav and every /brands/{brand} GET/POST must enforce that. Unknown/forbidden brands are 404, not a leaky 403. / goes to the first allowed brand. New brand and Pull order history are operator-only. Bootstrap the first operator from OPERATOR_EMAIL + OPERATOR_PASSWORD when users is empty. SESSION_SECRET for cookies.
 
-pytest must pass without Railway/Athena. Smoke coca-cola, monster, ferrera, plus creating a fourth brand in FakeStore. Commit, push, open a PR.
+Keep existing tests green with an autouse operator session fixture. Add supplier isolation tests. pytest must pass without Railway/Athena. Commit, push, open a PR.
 ```
