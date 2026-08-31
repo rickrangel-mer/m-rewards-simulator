@@ -9,6 +9,7 @@ from data import (
     SCHEMA_SQL,
     DuplicateBrandError,
     backfill_windows,
+    bootstrap_operator,
     catalog_frame,
     catalog_template_frame,
     create_brand,
@@ -16,6 +17,7 @@ from data import (
     ensure_schema,
     fetch_order_data,
     format_month_label,
+    hash_password,
     init_schema,
     load_brand_rewards,
     load_catalog_skus,
@@ -34,6 +36,7 @@ from data import (
     save_brand_rewards,
     seed_brand_catalogs,
     seed_brand_registry,
+    verify_password,
 )
 from refresh_orders import refresh_windows, run_brand_refresh, run_refresh
 
@@ -288,8 +291,11 @@ def test_schema_sql_includes_proposed_and_rewards_tables():
     assert "brand_rewards" in SCHEMA_SQL
     assert "brand_skus" in SCHEMA_SQL
     assert "CREATE TABLE IF NOT EXISTS brands" in SCHEMA_SQL
+    assert "CREATE TABLE IF NOT EXISTS users" in SCHEMA_SQL
+    assert "CREATE TABLE IF NOT EXISTS user_brands" in SCHEMA_SQL
     assert "PRIMARY KEY (brand, sku)" in SCHEMA_SQL
     assert "PRIMARY KEY (brand, sort)" in SCHEMA_SQL
+    assert "PRIMARY KEY (user_id, brand)" in SCHEMA_SQL
 
 
 def test_init_schema_executes_new_tables():
@@ -306,6 +312,8 @@ def test_init_schema_executes_new_tables():
     assert "CREATE TABLE IF NOT EXISTS brand_rewards" in sql_ran
     assert "CREATE TABLE IF NOT EXISTS brand_skus" in sql_ran
     assert "CREATE TABLE IF NOT EXISTS brands" in sql_ran
+    assert "CREATE TABLE IF NOT EXISTS users" in sql_ran
+    assert "CREATE TABLE IF NOT EXISTS user_brands" in sql_ran
     conn.commit.assert_called()
 
 
@@ -322,12 +330,54 @@ def test_ensure_schema_inits_when_url_present():
          patch("data.get_connection", return_value=conn), \
          patch("data.init_schema") as init, \
          patch("data.seed_brand_registry") as seed_registry, \
-         patch("data.seed_brand_catalogs") as seed:
+         patch("data.seed_brand_catalogs") as seed, \
+         patch("data.bootstrap_operator") as bootstrap:
         assert ensure_schema() is True
         init.assert_called_once_with(conn)
         seed_registry.assert_called_once_with(conn)
         seed.assert_called_once_with(conn)
+        bootstrap.assert_called_once_with(conn)
         conn.close.assert_called_once()
+
+
+def test_hash_and_verify_password():
+    hashed = hash_password("correct-horse")
+    assert hashed != "correct-horse"
+    assert verify_password("correct-horse", hashed)
+    assert not verify_password("wrong", hashed)
+    assert not verify_password("correct-horse", "")
+    assert not verify_password("", hashed)
+
+
+def test_bootstrap_operator_skips_when_users_exist():
+    with patch("data.count_users", return_value=1), \
+         patch("data.create_user") as create:
+        assert bootstrap_operator(conn="fake") is None
+        create.assert_not_called()
+
+
+def test_bootstrap_operator_creates_when_empty(monkeypatch):
+    monkeypatch.setenv("OPERATOR_EMAIL", "ops@mercaso.com")
+    monkeypatch.setenv("OPERATOR_PASSWORD", "s3cret")
+    created = {"id": 1, "email": "ops@mercaso.com", "role": "operator", "brands": []}
+    with patch("data.count_users", return_value=0), \
+         patch("data.hash_password", return_value="hashed") as hashed, \
+         patch("data.create_user", return_value=created) as create:
+        result = bootstrap_operator(conn="fake")
+    hashed.assert_called_once_with("s3cret")
+    create.assert_called_once_with(
+        "ops@mercaso.com", "hashed", "operator", conn="fake"
+    )
+    assert result == created
+
+
+def test_bootstrap_operator_skips_when_env_missing(monkeypatch):
+    monkeypatch.delenv("OPERATOR_EMAIL", raising=False)
+    monkeypatch.delenv("OPERATOR_PASSWORD", raising=False)
+    with patch("data.count_users", return_value=0), \
+         patch("data.create_user") as create:
+        assert bootstrap_operator(conn="fake") is None
+        create.assert_not_called()
 
 
 def test_overlay_proposed_points_keeps_omitted_and_drops_zero():

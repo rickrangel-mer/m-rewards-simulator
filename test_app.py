@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app as webapp
-from data import DuplicateBrandError, overlay_catalog, overlay_proposed_points
+from data import DuplicateBrandError, DuplicateUserError, overlay_catalog, overlay_proposed_points
 from simulator import BRAND_DEFAULTS
 
 
@@ -49,6 +49,105 @@ class FakeStore:
             "monster": {"label": "Monster", "theme": "monster", "sort": 1},
             "ferrera": {"label": "Ferrera", "theme": "ferrera", "sort": 2},
         }
+        self.users: dict[int, dict] = {}
+        self._next_user_id = 1
+
+    def _public_user(self, user: dict, include_hash: bool = False) -> dict:
+        out = {
+            "id": user["id"],
+            "email": user["email"],
+            "role": user["role"],
+            "brands": list(user.get("brands") or []),
+        }
+        if include_hash:
+            out["password_hash"] = user["password_hash"]
+        return out
+
+    def add_user(self, email: str, role: str, brands=None, password=None, password_hash="x"):
+        from data import hash_password
+
+        email = (email or "").strip().lower()
+        if any(u["email"] == email for u in self.users.values()):
+            raise DuplicateUserError(email)
+        uid = self._next_user_id
+        self._next_user_id += 1
+        if password:
+            password_hash = hash_password(password)
+        assigned = []
+        if role != "operator":
+            seen = set()
+            for slug in brands or []:
+                slug = str(slug).strip().lower()
+                if slug in self.brands and slug not in seen:
+                    assigned.append(slug)
+                    seen.add(slug)
+        self.users[uid] = {
+            "id": uid,
+            "email": email,
+            "role": role,
+            "password_hash": password_hash,
+            "brands": assigned,
+            "created_at": None,
+        }
+        return self._public_user(self.users[uid])
+
+    def count_users(self, conn=None) -> int:
+        return len(self.users)
+
+    def list_users(self, conn=None) -> list[dict]:
+        rows = []
+        for user in self.users.values():
+            row = self._public_user(user)
+            row["created_at"] = user.get("created_at")
+            rows.append(row)
+        return sorted(rows, key=lambda row: row["email"])
+
+    def get_user_by_id(self, user_id: int, conn=None) -> dict | None:
+        user = self.users.get(int(user_id))
+        return self._public_user(user) if user else None
+
+    def get_user_by_email(self, email: str, conn=None) -> dict | None:
+        email = (email or "").strip().lower()
+        for user in self.users.values():
+            if user["email"] == email:
+                return self._public_user(user, include_hash=True)
+        return None
+
+    def create_user(self, email: str, password_hash: str, role: str, brands=None, conn=None) -> dict:
+        return self.add_user(email, role, brands=brands, password_hash=password_hash)
+
+    def set_user_brands(self, user_id: int, brands, conn=None) -> list[str]:
+        user = self.users.get(int(user_id))
+        if not user:
+            raise KeyError(user_id)
+        if user["role"] == "operator":
+            user["brands"] = []
+            return []
+        assigned = []
+        seen = set()
+        for slug in brands or []:
+            slug = str(slug).strip().lower()
+            if slug in self.brands and slug not in seen:
+                assigned.append(slug)
+                seen.add(slug)
+        user["brands"] = assigned
+        return assigned
+
+    def set_user_password(self, user_id: int, password_hash: str, conn=None) -> None:
+        user = self.users.get(int(user_id))
+        if not user:
+            raise KeyError(user_id)
+        user["password_hash"] = password_hash
+
+    def delete_user(self, user_id: int, conn=None) -> None:
+        user = self.users.get(int(user_id))
+        if not user:
+            raise KeyError(user_id)
+        if user["role"] == "operator":
+            operators = sum(1 for row in self.users.values() if row["role"] == "operator")
+            if operators <= 1:
+                raise ValueError("cannot delete the last operator")
+        del self.users[int(user_id)]
 
     def load_proposed_points(self, brand: str, conn=None) -> dict[str, int]:
         return dict(self.proposed.get(brand, {}))
@@ -123,6 +222,11 @@ def persist_store():
 
 @pytest.fixture(autouse=True)
 def _patch_persist(persist_store):
+    persist_store.add_user("ops@mercaso.test", "operator")
+
+    def operator_user(request):
+        return persist_store.get_user_by_id(1)
+
     with patch.object(webapp, "load_proposed_points", persist_store.load_proposed_points), \
          patch.object(webapp, "merge_proposed_points", persist_store.merge_proposed_points), \
          patch.object(webapp, "load_brand_rewards", persist_store.load_brand_rewards), \
@@ -132,7 +236,16 @@ def _patch_persist(persist_store):
          patch.object(webapp, "merge_catalog_skus", persist_store.merge_catalog_skus), \
          patch.object(webapp, "load_brands", persist_store.load_brands), \
          patch.object(webapp, "get_brand", persist_store.get_brand), \
-         patch.object(webapp, "create_brand", persist_store.create_brand):
+         patch.object(webapp, "create_brand", persist_store.create_brand), \
+         patch.object(webapp, "count_users", persist_store.count_users), \
+         patch.object(webapp, "list_users", persist_store.list_users), \
+         patch.object(webapp, "get_user_by_id", persist_store.get_user_by_id), \
+         patch.object(webapp, "get_user_by_email", persist_store.get_user_by_email), \
+         patch.object(webapp, "create_user", persist_store.create_user), \
+         patch.object(webapp, "set_user_brands", persist_store.set_user_brands), \
+         patch.object(webapp, "set_user_password", persist_store.set_user_password), \
+         patch.object(webapp, "delete_user", persist_store.delete_user), \
+         patch.object(webapp, "current_user", side_effect=operator_user):
         yield persist_store
 
 
@@ -153,6 +266,23 @@ def _html_between(html: str, start_id: str, end_id: str | None = None) -> str:
         return html[start:]
     end = html.index(f'id="{end_id}"')
     return html[start:end]
+
+
+def _logged_out():
+    return patch.object(webapp, "current_user", return_value=None)
+
+
+def _as_user(user):
+    return patch.object(webapp, "current_user", return_value=user)
+
+
+def _nav_hrefs(html: str) -> list[str]:
+    start = html.find('class="brand-nav"')
+    if start < 0:
+        return []
+    end = html.find("</nav>", start)
+    chunk = html[start:end]
+    return [part.split('"', 1)[0] for part in chunk.split('href="')[1:]]
 
 
 def test_health():
@@ -1120,3 +1250,265 @@ def test_pull_order_history_athena_error_flashes(persist_store):
         page = client.get(response.headers["location"])
     assert b"Could not pull order history: Athena timeout" in page.content
     assert b"application/json" not in page.headers.get("content-type", "").encode()
+
+
+def test_login_page_renders_when_logged_out():
+    with _logged_out():
+        response = TestClient(webapp.app).get("/login")
+    assert response.status_code == 200
+    assert b"Sign in" in response.content
+    assert b"operator account is not configured" not in response.content
+
+
+def test_login_page_says_operator_not_configured_when_users_empty(persist_store):
+    persist_store.users.clear()
+    with _logged_out():
+        response = TestClient(webapp.app).get("/login")
+    assert response.status_code == 200
+    assert b"operator account is not configured" in response.content
+
+
+def test_unauthenticated_brand_redirects_to_login():
+    with _logged_out():
+        client = TestClient(webapp.app)
+        response = client.get("/brands/coca-cola", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("/login")
+    assert "coca-cola" in response.headers["location"]
+
+
+def test_unauthenticated_catalog_template_redirects_to_login():
+    with _logged_out():
+        response = TestClient(webapp.app).get("/catalog-template.xlsx", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("/login")
+
+
+def test_health_stays_public():
+    with _logged_out():
+        client = TestClient(webapp.app)
+        assert client.get("/health").json() == {"ok": True}
+        css = client.get("/static/styles.css")
+    assert css.status_code == 200
+
+
+def test_login_wrong_password_generic_flash(persist_store):
+    from data import hash_password
+
+    persist_store.set_user_password(1, hash_password("correct-horse"))
+    with _logged_out():
+        client = TestClient(webapp.app)
+        missing = client.post(
+            "/login",
+            data={"email": "nobody@example.com", "password": "nope"},
+        )
+        wrong = client.post(
+            "/login",
+            data={"email": "ops@mercaso.test", "password": "nope"},
+        )
+    assert missing.status_code == 200
+    assert wrong.status_code == 200
+    assert missing.headers.get("location") in (None, "")
+    assert b"Invalid email or password." in missing.content
+    assert b"Invalid email or password." in wrong.content
+    assert b"not found" not in wrong.content.lower()
+    assert b"does not exist" not in wrong.content.lower()
+
+
+def test_login_success_stores_user_id(persist_store):
+    from data import hash_password
+
+    persist_store.set_user_password(1, hash_password("secret"))
+    with _logged_out():
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/login",
+            data={"email": "OPS@mercaso.test", "password": "secret", "next": "/brands/monster"},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    assert response.headers["location"] == "/brands/monster"
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "session" in set_cookie.lower()
+
+
+def test_login_rejects_external_next(persist_store):
+    from data import hash_password
+
+    persist_store.set_user_password(1, hash_password("secret"))
+    with _logged_out():
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/login",
+            data={"email": "ops@mercaso.test", "password": "secret", "next": "https://evil.example/"},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    assert response.headers["location"] == "/"
+
+
+def test_operator_still_sees_all_brands_and_admin_controls():
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        html = TestClient(webapp.app).get("/brands/coca-cola").text
+    hrefs = _nav_hrefs(html)
+    assert "/brands/coca-cola" in hrefs
+    assert "/brands/monster" in hrefs
+    assert "/brands/ferrera" in hrefs
+    assert "New brand" in html
+    assert "Pull order history" in html
+    assert 'id="brand-refresh-form"' in html
+    assert "Users" in html
+    assert "ops@mercaso.test" in html
+    assert "Log out" in html
+
+
+def test_supplier_ferrera_only_cannot_see_other_brands(persist_store):
+    supplier = persist_store.add_user("ferrera@partner.test", "supplier", brands=["ferrera"])
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch, _as_user(supplier):
+        client = TestClient(webapp.app)
+        allowed = client.get("/brands/ferrera")
+        coke = client.get("/brands/coca-cola")
+        monster = client.get("/brands/monster")
+        home = client.get("/", follow_redirects=False)
+        create = client.post(
+            "/brands/create",
+            data=_create_brand_form(),
+            files=_create_catalog_file(),
+            follow_redirects=False,
+        )
+        refresh = client.post("/brands/ferrera/refresh-orders", follow_redirects=False)
+        users = client.get("/users", follow_redirects=False)
+    assert allowed.status_code == 200
+    html = allowed.text
+    hrefs = _nav_hrefs(html)
+    assert hrefs == ["/brands/ferrera"]
+    assert "Ferrera" in html
+    assert "New brand" not in html
+    assert "Pull order history" not in html
+    assert 'id="brand-refresh-form"' not in html
+    assert 'href="/users"' not in html
+    assert "Coca-Cola" not in html
+    assert "Monster" not in html
+    assert coke.status_code == 404
+    assert b"Unknown brand" in coke.content
+    assert b"cannot access" not in coke.content.lower()
+    assert b"forbidden" not in coke.content.lower()
+    assert monster.status_code == 404
+    assert home.status_code == 302
+    assert home.headers["location"] == "/brands/ferrera"
+    assert create.status_code in (403, 404)
+    assert "pepsi" not in persist_store.brands
+    assert refresh.status_code in (403, 404)
+    assert users.status_code in (403, 404)
+
+
+def test_supplier_two_brands_see_both_in_nav(persist_store):
+    supplier = persist_store.add_user(
+        "candy@partner.test", "supplier", brands=["ferrera", "monster"]
+    )
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch, _as_user(supplier):
+        html = TestClient(webapp.app).get("/brands/ferrera").text
+        home = TestClient(webapp.app).get("/", follow_redirects=False)
+        coke = TestClient(webapp.app).get("/brands/coca-cola")
+    hrefs = _nav_hrefs(html)
+    assert "/brands/ferrera" in hrefs
+    assert "/brands/monster" in hrefs
+    assert "/brands/coca-cola" not in hrefs
+    assert home.headers["location"] == "/brands/monster"
+    assert coke.status_code == 404
+
+
+def test_supplier_with_zero_brands_does_not_land_on_coca_cola(persist_store):
+    supplier = persist_store.add_user("empty@partner.test", "supplier", brands=[])
+    with _as_user(supplier):
+        client = TestClient(webapp.app)
+        home = client.get("/", follow_redirects=False)
+        if home.status_code in (301, 302, 303):
+            assert "coca-cola" not in home.headers["location"]
+            page = client.get(home.headers["location"])
+        else:
+            page = home
+    assert page.status_code == 200
+    assert "No brands assigned" in page.text
+    assert "Coca-Cola" not in page.text
+
+
+def test_supplier_simulate_on_assigned_brand_still_works(persist_store):
+    supplier = persist_store.add_user("ferrera@partner.test", "supplier", brands=["ferrera"])
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch, _as_user(supplier):
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/ferrera/simulate",
+            data={
+                "month": "2026-07",
+                "action": "simulate",
+                "sku": "SKU-A",
+                "proposed_points": "120",
+                "reward_name": "Reward 1",
+                "reward_points": "5000",
+            },
+        )
+        denied = client.post(
+            "/brands/coca-cola/simulate",
+            data={
+                "month": "2026-07",
+                "action": "simulate",
+                "sku": "SKU-A",
+                "proposed_points": "999",
+                "reward_name": "Reward 1",
+                "reward_points": "5000",
+            },
+        )
+    assert response.status_code == 200
+    assert persist_store.proposed["ferrera"]["SKU-A"] == 120
+    assert denied.status_code == 404
+    assert persist_store.proposed.get("coca-cola") in (None, {})
+
+
+def test_operator_creates_supplier_and_assigns_brands(persist_store):
+    client = TestClient(webapp.app)
+    page = client.get("/users")
+    assert page.status_code == 200
+    assert "Add user" in page.text
+    created = client.post(
+        "/users",
+        data={
+            "email": "ferrera@partner.test",
+            "password": "temp-pass",
+            "role": "supplier",
+            "brand": ["ferrera"],
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    user = persist_store.get_user_by_email("ferrera@partner.test")
+    assert user["role"] == "supplier"
+    assert user["brands"] == ["ferrera"]
+    follow = client.get("/users")
+    assert "ferrera@partner.test" in follow.text
+
+
+def test_supplier_cannot_open_or_create_users(persist_store):
+    supplier = persist_store.add_user("ferrera@partner.test", "supplier", brands=["ferrera"])
+    before = persist_store.count_users()
+    with _as_user(supplier):
+        client = TestClient(webapp.app)
+        listing = client.get("/users")
+        created = client.post(
+            "/users",
+            data={
+                "email": "sneaky@partner.test",
+                "password": "x",
+                "role": "operator",
+                "brand": "coca-cola",
+            },
+            follow_redirects=False,
+        )
+    assert listing.status_code in (403, 404)
+    assert created.status_code in (403, 404)
+    assert persist_store.count_users() == before
+    assert persist_store.get_user_by_email("sneaky@partner.test") is None

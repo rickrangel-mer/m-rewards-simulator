@@ -1,21 +1,7 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{{ title }} — M-Rewards</title>
-  <link rel="stylesheet" href="/static/styles.css" />
-</head>
-<body>
-  <header class="topbar">
-    <div class="brand-mark">
-      <a href="/">M-Rewards Simulator</a>
-    </div>
-  </header>
-  <main class="container">
-    <h1>{{ title }}</h1>
-    <p class="error-msg">{{ message }}</p>
-    <p><a class="button" href="/">Back to simulator</a></p>
-  </main>
-</body>
-</html>
+{% extends "base.html" %}
+{% block title %}{{ title }} — M-Rewards{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="error-msg">{{ message }}</p>
+<p><a class="button" href="/">Back to simulator</a></p>
+{% endblock %}
