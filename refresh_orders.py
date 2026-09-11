@@ -1,7 +1,8 @@
 """Monthly Railway cron: pull the previous complete month from Athena into Postgres.
 
-On first run (empty refresh_state) backfills the last 6 complete months.
-Set REFRESH_BACKFILL=1 to force a full backfill.
+On first run (empty refresh_state) backfills complete months from January 1 of
+the last complete month's year through that month. Set REFRESH_BACKFILL=1 to
+force that full backfill. Incremental runs still pull only the previous month.
 """
 
 from __future__ import annotations
@@ -10,7 +11,6 @@ import os
 from datetime import date
 
 from data import (
-    NUM_MONTHS,
     backfill_windows,
     count_orders,
     fetch_order_data,
@@ -26,10 +26,10 @@ from data import (
 )
 
 
-def refresh_windows(today: date, state: dict | None, num_months: int = NUM_MONTHS) -> list[tuple[date, date]]:
+def refresh_windows(today: date, state: dict | None, num_months: int | None = None) -> list[tuple[date, date]]:
     force_backfill = os.environ.get("REFRESH_BACKFILL", "").strip() in ("1", "true", "yes")
     if force_backfill or state is None or not state.get("last_refreshed_month"):
-        return backfill_windows(today, num_months=num_months)
+        return backfill_windows(today)
     return [previous_month_window(today)]
 
 
@@ -38,7 +38,7 @@ def run_refresh(
     sku_list: list[str] | None = None,
     fetch_fn=None,
     conn=None,
-    num_months: int = NUM_MONTHS,
+    num_months: int | None = None,
 ) -> dict:
     today = today or date.today()
     fetch_fn = fetch_fn or fetch_order_data
@@ -53,7 +53,7 @@ def run_refresh(
             sku_list = load_all_skus(conn=conn)
 
         state = get_refresh_state(conn)
-        windows = refresh_windows(today, state, num_months=num_months)
+        windows = refresh_windows(today, state)
         if not windows:
             raise RuntimeError("No refresh windows computed")
 
@@ -84,9 +84,10 @@ def run_brand_refresh(
     sku_list: list[str] | None = None,
     fetch_fn=None,
     conn=None,
-    num_months: int = NUM_MONTHS,
+    num_months: int | None = None,
 ) -> dict:
-    """Pull Athena orders for one brand's SKUs over the last complete months.
+    """Pull Athena orders for one brand's SKUs from January 1 of the last
+    complete month's year through that month.
 
     Does not replace other brands' rows and does not update refresh_state
     (the monthly cron still owns the full snapshot).
@@ -106,7 +107,7 @@ def run_brand_refresh(
         if not sku_list:
             raise ValueError("No participating SKUs on this brand.")
 
-        windows = backfill_windows(today, num_months=num_months)
+        windows = backfill_windows(today)
         if not windows:
             raise RuntimeError("No refresh windows computed")
         start, end = windows[0][0], windows[-1][1]

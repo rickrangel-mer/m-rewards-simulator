@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import io
+from datetime import date
 
 import pandas as pd
+from dateutil.relativedelta import relativedelta
 
 BRAND_DEFAULTS = {
     "coca-cola": {
@@ -66,6 +68,228 @@ def get_month_orders(raw: pd.DataFrame, year: int, month: int, skus: set) -> pd.
     filtered = raw[(raw["order_date"] >= start) & (raw["order_date"] < end)]
     filtered = filtered[filtered["sku"].isin(skus)]
     return filtered.groupby(["store_id", "sku"])["total_quantity"].sum().reset_index()
+
+
+def parse_grain(value: str | None) -> str:
+    if (value or "").strip().lower() == "quarter":
+        return "quarter"
+    return "month"
+
+
+def quarter_of(year: int, month: int) -> int:
+    return (int(month) - 1) // 3 + 1
+
+
+def months_in_quarter(year: int, quarter: int) -> list[tuple[int, int]]:
+    start = (int(quarter) - 1) * 3 + 1
+    return [(int(year), start + i) for i in range(3)]
+
+
+def last_complete_month(today: date | None = None) -> tuple[int, int]:
+    today = today or date.today()
+    start = today.replace(day=1) - relativedelta(months=1)
+    return start.year, start.month
+
+
+def period_months(
+    year: int,
+    month: int,
+    grain: str = "month",
+    today: date | None = None,
+) -> list[tuple[int, int]]:
+    """Calendar months in the selected period. Quarter uses complete months only."""
+    grain = parse_grain(grain)
+    if grain != "quarter":
+        return [(int(year), int(month))]
+    today = today or date.today()
+    last_y, last_m = last_complete_month(today)
+    last_idx = last_y * 12 + last_m
+    return [
+        (y, m)
+        for y, m in months_in_quarter(year, quarter_of(year, month))
+        if y * 12 + m <= last_idx
+    ]
+
+
+def orders_for_period(
+    raw: pd.DataFrame,
+    year: int,
+    month: int,
+    skus: set,
+    grain: str = "month",
+    today: date | None = None,
+) -> pd.DataFrame:
+    """Brand SKU units for a month or the complete months of that month's quarter.
+
+    One combined store/SKU frame so callers run a single simulate() on the period.
+    """
+    months = period_months(year, month, grain, today=today)
+    empty = pd.DataFrame(columns=["store_id", "sku", "total_quantity"])
+    if not months:
+        return empty
+    frames = [get_month_orders(raw, y, m, skus) for y, m in months]
+    combined = pd.concat(frames, ignore_index=True) if frames else empty
+    if combined is None or combined.empty:
+        return empty
+    return combined.groupby(["store_id", "sku"], as_index=False)["total_quantity"].sum()
+
+
+def _month_name(year: int, month: int) -> str:
+    return date(int(year), int(month), 1).strftime("%B")
+
+
+def period_copy(
+    grain: str,
+    year: int,
+    month: int,
+    months: list[tuple[int, int]] | None = None,
+    today: date | None = None,
+) -> dict:
+    """Plain-language labels for the simulation caption and hero."""
+    grain = parse_grain(grain)
+    if grain != "quarter":
+        label = date(int(year), int(month), 1).strftime("%B %Y")
+        return {
+            "grain": "month",
+            "period_label": label,
+            "using_data": f"Using {label} ordering data",
+            "inclusion": "stores that ordered this brand this month",
+            "incomplete": False,
+        }
+
+    q = quarter_of(year, month)
+    qlabel = f"Q{q} {year}"
+    months = list(months) if months is not None else period_months(year, month, "quarter", today=today)
+    names = [_month_name(y, m) for y, m in months]
+    full = months_in_quarter(year, q)
+    incomplete = months != full
+    if not names:
+        using = f"Using {qlabel} ordering data (no complete months yet)"
+    else:
+        span = names[0] if len(names) == 1 else f"{names[0]}–{names[-1]}"
+        if incomplete:
+            missing = [_month_name(y, m) for y, m in full if (y, m) not in months]
+            if len(missing) == 1:
+                using = f"Using {qlabel} ordering data ({span}; {missing[0]} is not complete)"
+            else:
+                using = f"Using {qlabel} ordering data ({span}; {', '.join(missing)} are not complete)"
+        else:
+            using = f"Using {qlabel} ordering data ({span})"
+    return {
+        "grain": "quarter",
+        "period_label": qlabel,
+        "using_data": using,
+        "inclusion": "stores that ordered this brand this quarter",
+        "incomplete": incomplete,
+    }
+
+
+def normalize_reward(item) -> tuple[str, int, int]:
+    """Coerce (name, points) or (name, points, value_cents) to a 3-tuple."""
+    name = str(item[0])
+    pts = int(item[1])
+    cents = int(item[2]) if len(item) > 2 else 0
+    return name, pts, cents
+
+
+def reward_thresholds(rewards) -> dict[str, int]:
+    return {name: pts for name, pts, _cents in (normalize_reward(r) for r in rewards)}
+
+
+def dollars_to_cents(value) -> int:
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return 0
+    try:
+        return int(round(float(text) * 100))
+    except (TypeError, ValueError):
+        return 0
+
+
+def cents_to_dollar_input(cents) -> str:
+    try:
+        cents = int(cents)
+    except (TypeError, ValueError):
+        cents = 0
+    if cents % 100 == 0:
+        return str(cents // 100)
+    return f"{cents / 100:.2f}"
+
+
+def format_usd(cents) -> str:
+    try:
+        cents = int(round(float(cents)))
+    except (TypeError, ValueError):
+        cents = 0
+    negative = cents < 0
+    cents = abs(cents)
+    if cents % 100 == 0:
+        text = f"${cents // 100:,}"
+    else:
+        text = f"${cents / 100:,.2f}"
+    return f"-{text}" if negative else text
+
+
+def budget_from_results(results: dict, rewards) -> dict:
+    """Estimated program cost: earners in this period × each reward's dollar value."""
+    counts = {r["name"]: int(r.get("count") or 0) for r in results.get("rewards") or []}
+    lines = []
+    total_cents = 0
+    for name, pts, cents in (normalize_reward(r) for r in rewards):
+        count = counts.get(name, 0)
+        line_cents = count * cents
+        lines.append({
+            "name": name,
+            "threshold": pts,
+            "count": count,
+            "value_cents": cents,
+            "value_label": format_usd(cents),
+            "total_cents": line_cents,
+            "total_label": format_usd(line_cents),
+        })
+        total_cents += line_cents
+    return {
+        "reward_lines": lines,
+        "total_cents": total_cents,
+        "total_label": format_usd(total_cents),
+    }
+
+
+def sku_point_totals(period_orders: pd.DataFrame, skus_df: pd.DataFrame, proposed: dict[str, int] | None = None) -> dict:
+    """Units × proposed points (falling back to current points) per catalog SKU."""
+    proposed = proposed or {}
+    lookup = build_points_lookup(skus_df, proposed) if skus_df is not None and not skus_df.empty else {}
+    units: dict[str, float] = {}
+    if period_orders is not None and not period_orders.empty:
+        grouped = period_orders.groupby(period_orders["sku"].astype(str))["total_quantity"].sum()
+        units = {str(k): float(v) for k, v in grouped.items()}
+    rows = []
+    total_points = 0.0
+    total_units = 0.0
+    if skus_df is not None and not skus_df.empty:
+        for _, row in skus_df.iterrows():
+            sku = str(row["sku"])
+            title = row["product_title"]
+            qty = units.get(sku, 0.0)
+            pts = int(lookup.get(title, row.get("current_points") or 0) or 0)
+            issued = qty * pts
+            if qty <= 0:
+                continue
+            rows.append({
+                "sku": sku,
+                "product_title": title,
+                "units": qty,
+                "points_per_unit": pts,
+                "points_issued": issued,
+            })
+            total_points += issued
+            total_units += qty
+    rows.sort(key=lambda r: r["points_issued"], reverse=True)
+    return {
+        "skus": rows,
+        "total_units": total_units,
+        "total_points_issued": total_points,
+    }
 
 
 def simulate(month_orders, sku_to_title, points_lookup, reward_thresholds) -> pd.DataFrame:

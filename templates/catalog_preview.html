@@ -89,6 +89,7 @@
 
 <form method="post" action="/brands/{{ brand }}/catalog/confirm" class="actions" id="catalog-confirm">
   <input type="hidden" name="month" value="{{ month }}" />
+  <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
   <textarea name="payload" hidden>{{ payload }}</textarea>
   <button type="submit" name="action" value="merge" class="button primary">Merge into catalog</button>
   <button type="submit" name="action" value="replace" class="button secondary">Replace catalog</button>

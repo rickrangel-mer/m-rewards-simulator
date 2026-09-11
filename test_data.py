@@ -53,11 +53,19 @@ def test_previous_month_window_january_wraps_to_december():
     assert end == date(2026, 1, 1)
 
 
-def test_backfill_windows_are_six_complete_months_oldest_first():
-    windows = backfill_windows(date(2026, 9, 1), num_months=6)
-    assert windows[0] == (date(2026, 3, 1), date(2026, 4, 1))
+def test_backfill_windows_from_january_of_last_complete_month_year():
+    windows = backfill_windows(date(2026, 9, 1))
+    assert windows[0] == (date(2026, 1, 1), date(2026, 2, 1))
     assert windows[-1] == (date(2026, 8, 1), date(2026, 9, 1))
-    assert len(windows) == 6
+    assert len(windows) == 8
+    assert windows[0][0] != date(2026, 3, 1)
+
+
+def test_backfill_windows_january_uses_previous_year():
+    windows = backfill_windows(date(2027, 1, 15))
+    assert windows[0] == (date(2026, 1, 1), date(2026, 2, 1))
+    assert windows[-1] == (date(2026, 12, 1), date(2027, 1, 1))
+    assert len(windows) == 12
 
 
 def test_format_month_label():
@@ -198,8 +206,9 @@ def test_fetch_order_data_builds_exclusive_month_query(monkeypatch):
 
 def test_refresh_windows_backfill_when_state_empty():
     windows = refresh_windows(date(2026, 9, 1), None)
-    assert windows[0][0] == date(2026, 3, 1)
+    assert windows[0][0] == date(2026, 1, 1)
     assert windows[-1] == previous_month_window(date(2026, 9, 1))
+    assert len(windows) == 8
 
 
 def test_refresh_windows_previous_month_when_already_refreshed():
@@ -216,7 +225,8 @@ def test_refresh_windows_force_backfill_env(monkeypatch):
         date(2026, 9, 1),
         {"last_refreshed_month": "2026-08"},
     )
-    assert len(windows) == 6
+    assert len(windows) == 8
+    assert windows[0][0] == date(2026, 1, 1)
     assert windows[-1] == previous_month_window(date(2026, 9, 1))
 
 
@@ -250,10 +260,10 @@ def test_run_refresh_backfill_calls_mocked_athena_per_month(monkeypatch):
             sku_list=["SKU-1"],
             fetch_fn=fake_fetch,
             conn=conn,
-            num_months=6,
         )
 
-    assert len(calls) == 6
+    assert len(calls) == 8
+    assert calls[0][1:] == (date(2026, 1, 1), date(2026, 2, 1))
     assert calls[-1][1:] == (date(2026, 8, 1), date(2026, 9, 1))
     assert replaced[-1][0] == date(2026, 8, 1)
     assert result["last_refreshed_month"] == "2026-08"
@@ -296,6 +306,7 @@ def test_schema_sql_includes_proposed_and_rewards_tables():
     assert "PRIMARY KEY (brand, sku)" in SCHEMA_SQL
     assert "PRIMARY KEY (brand, sort)" in SCHEMA_SQL
     assert "PRIMARY KEY (user_id, brand)" in SCHEMA_SQL
+    assert "value_cents" in SCHEMA_SQL
 
 
 def test_init_schema_executes_new_tables():
@@ -314,6 +325,8 @@ def test_init_schema_executes_new_tables():
     assert "CREATE TABLE IF NOT EXISTS brands" in sql_ran
     assert "CREATE TABLE IF NOT EXISTS users" in sql_ran
     assert "CREATE TABLE IF NOT EXISTS user_brands" in sql_ran
+    assert "value_cents" in sql_ran
+    assert "ALTER TABLE brand_rewards" in sql_ran
     conn.commit.assert_called()
 
 
@@ -449,15 +462,16 @@ def test_load_brand_rewards_orders_by_sort():
     cursor = MagicMock()
     cursor.__enter__.return_value = cursor
     cursor.__exit__.return_value = False
-    cursor.fetchall.return_value = [("First", 5000), ("Second", 9000)]
+    cursor.fetchall.return_value = [("First", 5000, 800), ("Second", 9000, 0)]
     conn = MagicMock()
     conn.cursor.return_value = cursor
 
     result = load_brand_rewards("coca-cola", conn=conn)
 
-    assert result == [("First", 5000), ("Second", 9000)]
+    assert result == [("First", 5000, 800), ("Second", 9000, 0)]
     sql, params = cursor.execute.call_args[0]
     assert "ORDER BY sort" in sql
+    assert "value_cents" in sql
     assert params == ("coca-cola",)
 
 
@@ -469,16 +483,18 @@ def test_save_brand_rewards_replaces_rows():
     conn.cursor.return_value = cursor
 
     with patch("psycopg2.extras.execute_values") as execute_values:
-        save_brand_rewards("monster", [("Reward 1", 6500), ("Reward 2", 10000)], conn=conn)
+        save_brand_rewards("monster", [("Reward 1", 6500, 800), ("Reward 2", 10000, 0)], conn=conn)
 
     delete_sql, delete_params = cursor.execute.call_args[0]
     assert "DELETE FROM brand_rewards" in delete_sql
     assert delete_params == ("monster",)
     rows = execute_values.call_args[0][2]
     assert rows == [
-        ("monster", 0, "Reward 1", 6500),
-        ("monster", 1, "Reward 2", 10000),
+        ("monster", 0, "Reward 1", 6500, 800),
+        ("monster", 1, "Reward 2", 10000, 0),
     ]
+    insert_sql = execute_values.call_args[0][1]
+    assert "value_cents" in insert_sql
     conn.commit.assert_called()
 
 
@@ -749,11 +765,10 @@ def test_run_brand_refresh_one_athena_query_does_not_touch_refresh_state():
             sku_list=["RB-1"],
             fetch_fn=fake_fetch,
             conn=conn,
-            num_months=6,
         )
 
     assert len(calls) == 1
-    assert calls[0] == (("RB-1",), date(2026, 3, 1), date(2026, 9, 1))
+    assert calls[0] == (("RB-1",), date(2026, 1, 1), date(2026, 9, 1))
     replace.assert_called_once()
     set_state.assert_not_called()
     assert result["rows"] == 4

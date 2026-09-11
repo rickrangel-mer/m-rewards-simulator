@@ -8,6 +8,7 @@ import os
 import re
 import sys
 from contextlib import asynccontextmanager
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
@@ -63,17 +64,29 @@ from data import (
 from simulator import (
     BRAND_DEFAULTS,
     available_months,
+    budget_from_results,
     build_points_lookup,
+    cents_to_dollar_input,
     compute_store_penetration,
-    get_month_orders,
+    dollars_to_cents,
+    format_usd,
+    normalize_reward,
+    orders_for_period,
+    parse_grain,
     parse_imported_points,
+    period_copy,
+    period_months,
+    reward_thresholds,
     simulate,
+    sku_point_totals,
     summarize_results,
 )
 from refresh_orders import run_brand_refresh
 
 BASE_DIR = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+TEMPLATES.env.filters["usd"] = format_usd
+TEMPLATES.env.filters["dollar_input"] = cents_to_dollar_input
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 RESERVED_SLUGS = frozenset({
@@ -341,15 +354,15 @@ def set_proposed(brand: str, patch: dict[str, int]) -> dict[str, int]:
     return merge_proposed_points(brand, patch)
 
 
-def get_rewards(brand: str) -> list[tuple[str, int]]:
+def get_rewards(brand: str) -> list[tuple[str, int, int]]:
     stored = load_brand_rewards(brand)
     if stored:
-        return [(str(n), int(p)) for n, p in stored]
+        return [normalize_reward(r) for r in stored]
     defaults = BRAND_DEFAULTS.get(brand, {}).get("rewards") or {}
-    return list(defaults.items())
+    return [(str(n), int(p), 0) for n, p in defaults.items()]
 
 
-def empty_results(rewards: list[tuple[str, int]] | None = None) -> dict:
+def empty_results(rewards: list[tuple] | None = None) -> dict:
     return {
         "total_stores": 0,
         "avg_points": 0.0,
@@ -357,15 +370,23 @@ def empty_results(rewards: list[tuple[str, int]] | None = None) -> dict:
         "max_points": 0.0,
         "rewards": [
             {"name": name, "threshold": int(pts), "count": 0, "pct": 0.0}
-            for name, pts in (rewards or [])
+            for name, pts, *_rest in (rewards or [])
         ],
         "stores": [],
         "histogram": [],
     }
 
 
-def set_rewards(brand: str, rewards: list[tuple[str, int]]) -> None:
-    save_brand_rewards(brand, rewards)
+def empty_budget(rewards: list[tuple] | None = None) -> dict:
+    return budget_from_results(empty_results(rewards), rewards or [])
+
+
+def empty_sku_totals() -> dict:
+    return {"skus": [], "total_units": 0.0, "total_points_issued": 0.0}
+
+
+def set_rewards(brand: str, rewards: list[tuple]) -> None:
+    save_brand_rewards(brand, [normalize_reward(r) for r in rewards])
 
 
 def enrich_skus(raw: pd.DataFrame, skus_df: pd.DataFrame) -> pd.DataFrame:
@@ -404,18 +425,26 @@ def parse_month(month_label: str) -> tuple[int, int]:
     return int(period.year), int(period.month)
 
 
-def parse_reward_form(form) -> list[tuple[str, int]]:
+def period_today() -> date:
+    return date.today()
+
+
+def parse_reward_form(form) -> list[tuple[str, int, int]]:
     names = form.getlist("reward_name")
     points = form.getlist("reward_points")
+    values = form.getlist("reward_value")
     rewards = []
-    for name, pts in zip(names, points):
+    for i, name in enumerate(names):
         name = (name or "").strip()
         if not name:
             continue
+        pts_raw = points[i] if i < len(points) else 0
+        val_raw = values[i] if i < len(values) else 0
         try:
-            rewards.append((name, int(float(pts))))
+            pts = int(float(pts_raw))
         except (TypeError, ValueError):
-            rewards.append((name, 0))
+            pts = 0
+        rewards.append((name, pts, dollars_to_cents(val_raw)))
     return rewards
 
 
@@ -522,16 +551,35 @@ def download_catalog_template():
     )
 
 
-def run_brand_simulation(raw, skus_df, month_label: str, proposed: dict, rewards: list[tuple[str, int]]):
+def run_brand_simulation(
+    raw,
+    skus_df,
+    month_label: str,
+    proposed: dict,
+    rewards: list[tuple],
+    grain: str = "month",
+    today: date | None = None,
+):
     year, mon = parse_month(month_label)
+    grain = parse_grain(grain)
+    today = today or period_today()
     valid = set(skus_df["sku"].astype(str))
     points_lookup = build_points_lookup(skus_df, proposed)
     sku_to_title = dict(zip(skus_df["sku"].astype(str), skus_df["product_title"]))
-    month_orders = get_month_orders(raw, year, mon, valid)
-    month_orders = month_orders.merge(skus_df[["sku", "product_title"]], on="sku", how="inner")
-    reward_thresholds = dict(rewards)
-    store_points = simulate(month_orders, sku_to_title, points_lookup, reward_thresholds)
-    return summarize_results(store_points, reward_thresholds)
+    months = period_months(year, mon, grain, today=today)
+    period_orders = orders_for_period(raw, year, mon, valid, grain=grain, today=today)
+    if not period_orders.empty and "sku" in skus_df.columns:
+        period_orders = period_orders.merge(skus_df[["sku", "product_title"]], on="sku", how="inner")
+    thresholds = reward_thresholds(rewards)
+    store_points = simulate(period_orders, sku_to_title, points_lookup, thresholds)
+    results = summarize_results(store_points, thresholds)
+    return {
+        "results": results,
+        "budget": budget_from_results(results, rewards),
+        "sku_totals": sku_point_totals(period_orders, skus_df, proposed),
+        "period_months": months,
+        "period": period_copy(grain, year, mon, months, today=today),
+    }
 
 
 def brand_page_context(
@@ -543,11 +591,13 @@ def brand_page_context(
     months: list[str],
     skus_df,
     proposed: dict,
-    rewards: list[tuple[str, int]],
+    rewards: list[tuple],
     search: str = "",
     flash=None,
     bulk_value: int = 100,
+    grain: str = "month",
 ):
+    grain = parse_grain(grain)
     rows = apply_proposed_to_rows(skus_df, proposed)
     if search:
         needle = search.lower()
@@ -561,9 +611,28 @@ def brand_page_context(
         freshness = format_month_label(state["last_refreshed_month"])
 
     if selected_month:
-        results = run_brand_simulation(raw, skus_df, selected_month, proposed, rewards)
+        sim = run_brand_simulation(
+            raw, skus_df, selected_month, proposed, rewards, grain=grain
+        )
+        results = sim["results"]
+        budget = sim["budget"]
+        sku_totals = sim["sku_totals"]
+        period = sim["period"]
     else:
         results = empty_results(rewards)
+        budget = empty_budget(rewards)
+        sku_totals = empty_sku_totals()
+        period = {
+            "grain": grain,
+            "period_label": "no order months yet",
+            "using_data": "Using no order months yet ordering data",
+            "inclusion": (
+                "stores that ordered this brand this quarter"
+                if grain == "quarter"
+                else "stores that ordered this brand this month"
+            ),
+            "incomplete": False,
+        }
 
     ctx = page_chrome(brand, user=request_user(request))
     ctx.update({
@@ -574,11 +643,15 @@ def brand_page_context(
         "selected_month_label": (
             format_month_label(selected_month) if selected_month else "no order months yet"
         ),
+        "grain": grain,
+        "period": period,
         "rows": rows,
-        "rewards": rewards,
+        "rewards": [normalize_reward(r) for r in rewards],
         "search": search,
         "freshness": freshness,
         "results": results,
+        "budget": budget,
+        "sku_totals": sku_totals,
         "flash": flash,
         "bulk_value": bulk_value,
         "open_new_brand": False,
@@ -587,11 +660,18 @@ def brand_page_context(
 
 
 @app.get("/brands/{brand}", response_class=HTMLResponse)
-def brand_page(request: Request, brand: str, month: str | None = None, q: str | None = None):
+def brand_page(
+    request: Request,
+    brand: str,
+    month: str | None = None,
+    q: str | None = None,
+    grain: str | None = None,
+):
     brand, denied = require_brand(request, brand)
     if denied:
         return denied
 
+    grain = parse_grain(grain)
     raw, state, error = load_orders_or_error()
     if error:
         return error_page(request, "Data unavailable", error, 503)
@@ -617,6 +697,7 @@ def brand_page(request: Request, brand: str, month: str | None = None, q: str | 
         rewards,
         search=(q or "").strip(),
         flash=flash,
+        grain=grain,
     )
     ctx["open_new_brand"] = open_new_brand
     return TEMPLATES.TemplateResponse(request, "brand.html", ctx)
@@ -664,15 +745,20 @@ async def simulate_brand(
     q: str = Form(""),
     bulk_value: int = Form(100),
     action: str = Form("simulate"),
+    grain: str = Form("month"),
 ):
     brand, denied = require_brand(request, brand)
     if denied:
         return denied
 
+    grain = parse_grain(grain)
     form = await request.form()
     rewards = parse_reward_form(form)
     if not rewards:
-        rewards = list((BRAND_DEFAULTS.get(brand, {}).get("rewards") or {}).items())
+        rewards = [
+            (str(n), int(p), 0)
+            for n, p in (BRAND_DEFAULTS.get(brand, {}).get("rewards") or {}).items()
+        ]
     set_rewards(brand, rewards)
 
     patch = parse_proposed_patch(form)
@@ -683,10 +769,7 @@ async def simulate_brand(
             patch[str(sku)] = int(bulk_value)
         set_proposed(brand, patch)
         request.session["flash"] = f"Applied {bulk_value} points to {len(selected)} SKUs."
-        qs = f"?month={month}"
-        if q:
-            qs += f"&q={q}"
-        return RedirectResponse(url=f"/brands/{brand}{qs}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain)}", status_code=303)
 
     if action == "add_reward":
         new_name = (form.get("new_reward_name") or "").strip() or f"Reward {len(rewards) + 1}"
@@ -694,10 +777,11 @@ async def simulate_brand(
             new_pts = int(float(form.get("new_reward_points") or 5000))
         except (TypeError, ValueError):
             new_pts = 5000
-        rewards.append((new_name, new_pts))
+        new_cents = dollars_to_cents(form.get("new_reward_value"))
+        rewards.append((new_name, new_pts, new_cents))
         set_rewards(brand, rewards)
         set_proposed(brand, patch)
-        return RedirectResponse(url=f"/brands/{brand}?month={month}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
 
     if action.startswith("remove_reward_"):
         idx = int(action.split("_")[-1])
@@ -705,7 +789,7 @@ async def simulate_brand(
             rewards.pop(idx)
         set_rewards(brand, rewards)
         set_proposed(brand, patch)
-        return RedirectResponse(url=f"/brands/{brand}?month={month}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
 
     proposed = set_proposed(brand, patch)
 
@@ -733,6 +817,7 @@ async def simulate_brand(
             rewards,
             search=(q or "").strip(),
             bulk_value=bulk_value,
+            grain=grain,
         ),
     )
 
@@ -742,17 +827,19 @@ async def import_points(
     request: Request,
     brand: str,
     month: str = Form(""),
+    grain: str = Form("month"),
     file: UploadFile = File(...),
 ):
     brand, denied = require_brand(request, brand)
     if denied:
         return denied
 
+    grain = parse_grain(grain)
     content = await file.read()
     points_map, error = parse_imported_points(content, file.filename or "upload.csv")
     if error:
         request.session["flash"] = error
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
 
     skus_df = load_brand_skus(brand)
     valid = set(skus_df["sku"].dropna().astype(str))
@@ -771,7 +858,7 @@ async def import_points(
     if matched == 0:
         msg = "No matching SKUs found in the uploaded file."
     request.session["flash"] = msg
-    return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
+    return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
 
 
 @app.get("/brands/{brand}/export")
@@ -801,8 +888,10 @@ def export_skus(request: Request, brand: str):
     )
 
 
-def _month_query(month: str, q: str = "") -> str:
+def _month_query(month: str, q: str = "", grain: str = "month") -> str:
     qs = f"?month={month}"
+    if parse_grain(grain) == "quarter":
+        qs += "&grain=quarter"
     if q:
         qs += f"&q={q}"
     return qs
@@ -831,17 +920,19 @@ async def preview_catalog_upload(
     request: Request,
     brand: str,
     month: str = Form(""),
+    grain: str = Form("month"),
     file: UploadFile = File(...),
 ):
     brand, denied = require_brand(request, brand)
     if denied:
         return denied
 
+    grain = parse_grain(grain)
     content = await file.read()
     incoming, error = parse_catalog_file(content, file.filename or "catalog.xlsx")
     if error:
         request.session["flash"] = error
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
 
     existing = load_catalog_skus(brand)
     diff = diff_catalog(existing, incoming)
@@ -849,6 +940,7 @@ async def preview_catalog_upload(
     ctx = page_chrome(brand, user=request_user(request))
     ctx.update({
         "month": month,
+        "grain": grain,
         "filename": file.filename or "upload",
         "diff": diff,
         "payload": payload,
@@ -863,6 +955,7 @@ async def confirm_catalog_upload(
     request: Request,
     brand: str,
     month: str = Form(""),
+    grain: str = Form("month"),
     action: str = Form(...),
     payload: str = Form(...),
 ):
@@ -870,13 +963,14 @@ async def confirm_catalog_upload(
     if denied:
         return denied
 
+    grain = parse_grain(grain)
     try:
         incoming = json.loads(payload)
         if not isinstance(incoming, list) or not incoming:
             raise ValueError("empty")
     except (TypeError, ValueError, json.JSONDecodeError):
         request.session["flash"] = "Catalog preview expired. Please upload the file again."
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
 
     label = (get_brand(brand) or {}).get("label") or brand
     if action == "merge":
@@ -892,9 +986,9 @@ async def confirm_catalog_upload(
         )
     else:
         request.session["flash"] = "Catalog upload cancelled."
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
 
-    return RedirectResponse(url=f"/brands/{brand}{_month_query(month)}", status_code=303)
+    return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
 
 
 def _safe_return_to(value: str) -> str:

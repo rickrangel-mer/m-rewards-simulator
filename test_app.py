@@ -42,7 +42,7 @@ class FakeStore:
 
     def __init__(self):
         self.proposed: dict[str, dict[str, int]] = {}
-        self.rewards: dict[str, list[tuple[str, int]]] = {}
+        self.rewards: dict[str, list[tuple[str, int, int]]] = {}
         self.catalogs: dict[str, list[dict]] = {}
         self.brands: dict[str, dict] = {
             "coca-cola": {"label": "Coca-Cola", "theme": "coca-cola", "sort": 0},
@@ -157,14 +157,20 @@ class FakeStore:
         self.proposed[brand] = merged
         return dict(merged)
 
-    def load_brand_rewards(self, brand: str, conn=None) -> list[tuple[str, int]]:
+    def load_brand_rewards(self, brand: str, conn=None) -> list[tuple[str, int, int]]:
         stored = self.rewards.get(brand)
         if not stored:
             return []
         return list(stored)
 
-    def save_brand_rewards(self, brand: str, rewards: list[tuple[str, int]], conn=None) -> None:
-        self.rewards[brand] = [(str(n), int(p)) for n, p in rewards]
+    def save_brand_rewards(self, brand: str, rewards: list[tuple], conn=None, commit: bool = True) -> None:
+        out = []
+        for item in rewards:
+            name = str(item[0])
+            pts = int(item[1])
+            cents = int(item[2]) if len(item) > 2 else 0
+            out.append((name, pts, cents))
+        self.rewards[brand] = out
 
     def load_catalog_skus(self, brand: str, conn=None) -> list[dict]:
         return [dict(r) for r in self.catalogs.get(brand, [])]
@@ -205,7 +211,7 @@ class FakeStore:
             "sort": int(meta.get("sort", 0)),
         }
 
-    def create_brand(self, slug: str, label: str, theme: str, records: list[dict], rewards: list[tuple[str, int]], conn=None) -> dict:
+    def create_brand(self, slug: str, label: str, theme: str, records: list[dict], rewards: list[tuple], conn=None) -> dict:
         if slug in self.brands:
             raise DuplicateBrandError(slug)
         sort = max((int(meta.get("sort", 0)) for meta in self.brands.values()), default=-1) + 1
@@ -320,7 +326,8 @@ def test_brand_page_sections_place_controls_with_outcomes():
     html = response.text
     results = _html_between(html, "simulation-results", "sku-points")
     sku = _html_between(html, "sku-points", "reward-thresholds")
-    rewards = _html_between(html, "reward-thresholds")
+    rewards = _html_between(html, "reward-thresholds", "budget-calculator")
+    budget = _html_between(html, "budget-calculator")
 
     assert 'id="month-form"' in results
     assert 'id="brand-refresh-form"' in results
@@ -364,11 +371,24 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Add Reward" in rewards
     assert "Saved for everyone" in rewards
     assert "Remove" in rewards
+    assert "Value ($)" in rewards
+    assert 'name="reward_value"' in rewards
     assert "Search SKUs" not in rewards
     assert "Simulation month" not in rewards
     assert "Import proposed points" not in rewards
     assert "Upload catalog" not in rewards
     assert "Pull order history" not in rewards
+    assert "Estimated program cost" not in rewards
+
+    assert 'id="budget-calculator"' in budget
+    assert "Estimated program cost" in budget
+    assert "Reward cost" in budget
+    assert "SKU point totals" in budget
+    assert "Saved for everyone" in budget
+    assert "Search SKUs" not in budget
+    assert "Add Reward" not in budget
+    assert "Pull order history" not in budget
+    assert "Simulation month" not in budget
 
 
 def test_all_brands_render_sectioned_pages():
@@ -387,6 +407,7 @@ def test_all_brands_render_sectioned_pages():
             assert 'id="simulation-results"' in html
             assert 'id="sku-points"' in html
             assert 'id="reward-thresholds"' in html
+            assert 'id="budget-calculator"' in html
             assert 'id="month-form"' in html
             assert 'id="brand-refresh-form"' in html
             assert "Pull order history" in html
@@ -398,6 +419,7 @@ def test_all_brands_render_sectioned_pages():
             assert f'data-brand="{brand}"' in html
             assert f'data-theme="{brand}"' in html
             assert "stores that ordered this brand this month" in html
+            assert "Estimated program cost" in html
             assert "New brand" in html
             assert 'id="new-brand-dialog"' in html
             assert "fonts.googleapis.com" in html
@@ -438,6 +460,7 @@ def test_simulate_posts_results():
     assert b"Total Stores" in response.content
     assert b'id="sku-points"' in response.content
     assert b'id="reward-thresholds"' in response.content
+    assert b'id="budget-calculator"' in response.content
 
 
 def test_bulk_apply_preserves_month_and_flash():
@@ -599,7 +622,7 @@ def test_simulate_round_trips_without_cookies(persist_store):
         page = reader.get("/brands/coca-cola")
 
     assert persist_store.proposed["coca-cola"]["SKU-A"] == 333
-    assert persist_store.rewards["coca-cola"] == [("Team Cooler", 1234)]
+    assert persist_store.rewards["coca-cola"] == [("Team Cooler", 1234, 0)]
     assert b'value="333"' in page.content
     assert b"Team Cooler" in page.content
     assert b'value="1234"' in page.content
@@ -714,7 +737,7 @@ def test_add_and_remove_reward_round_trips_without_cookies(persist_store):
         reader = TestClient(webapp.app)
         page = reader.get("/brands/coca-cola")
         assert b"Bonus" in page.content
-        assert persist_store.rewards["coca-cola"] == [("Existing", 5000), ("Bonus", 8000)]
+        assert persist_store.rewards["coca-cola"] == [("Existing", 5000, 0), ("Bonus", 8000, 0)]
 
         writer.post(
             "/brands/coca-cola/simulate",
@@ -731,7 +754,7 @@ def test_add_and_remove_reward_round_trips_without_cookies(persist_store):
         page = reader.get("/brands/coca-cola")
     assert b"Bonus" not in page.content
     assert b"Existing" in page.content
-    assert persist_store.rewards["coca-cola"] == [("Existing", 5000)]
+    assert persist_store.rewards["coca-cola"] == [("Existing", 5000, 0)]
 
 
 def test_persist_round_trip_all_brands(persist_store):
@@ -761,11 +784,12 @@ def test_persist_round_trip_all_brands(persist_store):
             assert 'id="simulation-results"' in html
             assert 'id="sku-points"' in html
             assert 'id="reward-thresholds"' in html
+            assert 'id="budget-calculator"' in html
             assert f"{brand} shared reward" in html
             assert 'value="222"' in html
             assert 'value="7777"' in html
             assert persist_store.proposed[brand]["SKU-A"] == 222
-            assert persist_store.rewards[brand] == [(f"{brand} shared reward", 7777)]
+            assert persist_store.rewards[brand] == [(f"{brand} shared reward", 7777, 0)]
 
 
 def test_empty_store_serves_brand_defaults(persist_store):
@@ -1073,7 +1097,7 @@ def test_create_brand_persists_and_renders_sectioned_page(persist_store):
     assert persist_store.brands["pepsi"]["label"] == "Pepsi"
     assert persist_store.brands["pepsi"]["theme"] == "coca-cola"
     assert persist_store.catalogs["pepsi"][0]["sku"] == "SKU-A"
-    assert persist_store.rewards["pepsi"] == [("Cooler", 5000)]
+    assert persist_store.rewards["pepsi"] == [("Cooler", 5000, 0)]
     assert page.status_code == 200
     html = page.text
     assert "Pepsi" in html
@@ -1081,6 +1105,7 @@ def test_create_brand_persists_and_renders_sectioned_page(persist_store):
     assert 'id="simulation-results"' in html
     assert 'id="sku-points"' in html
     assert 'id="reward-thresholds"' in html
+    assert 'id="budget-calculator"' in html
     assert "Pepsi Cola" in html
     assert "Cooler" in html
     assert 'data-brand="pepsi"' in html
@@ -1111,6 +1136,7 @@ def test_create_brand_with_new_skus_renders_before_refresh(persist_store):
     assert 'id="simulation-results"' in html
     assert 'id="sku-points"' in html
     assert 'id="reward-thresholds"' in html
+    assert 'id="budget-calculator"' in html
     assert "No order months yet" in html
     assert 'data-brand="zevia"' in html
     assert 'data-theme="monster"' in html
@@ -1160,7 +1186,7 @@ def test_create_brand_duplicate_name_does_not_overwrite(persist_store):
     persist_store.catalogs["coca-cola"] = [
         {"sku": "SKU-A", "product_title": "Keep Me", "current_points": 50},
     ]
-    persist_store.rewards["coca-cola"] = [("8 Dollar Rebate", 5000)]
+    persist_store.rewards["coca-cola"] = [("8 Dollar Rebate", 5000, 0)]
     client = TestClient(webapp.app)
     response = client.post(
         "/brands/create",
@@ -1171,7 +1197,7 @@ def test_create_brand_duplicate_name_does_not_overwrite(persist_store):
     assert response.status_code == 303
     assert persist_store.brands["coca-cola"]["label"] == "Coca-Cola"
     assert persist_store.catalogs["coca-cola"][0]["product_title"] == "Keep Me"
-    assert persist_store.rewards["coca-cola"] == [("8 Dollar Rebate", 5000)]
+    assert persist_store.rewards["coca-cola"] == [("8 Dollar Rebate", 5000, 0)]
     orders_patch, skus_patch = _mocked_client()
     with orders_patch, skus_patch:
         follow = client.get(response.headers["location"])
@@ -1426,6 +1452,8 @@ def test_supplier_ferrera_only_cannot_see_other_brands(persist_store):
     hrefs = _nav_hrefs(html)
     assert hrefs == ["/brands/ferrera"]
     assert "Ferrera" in html
+    assert 'id="budget-calculator"' in html
+    assert "Estimated program cost" in html
     assert "New brand" not in html
     assert "Pull order history" not in html
     assert 'id="brand-refresh-form"' not in html
@@ -1557,3 +1585,120 @@ def test_supplier_cannot_open_or_create_users(persist_store):
     assert created.status_code in (403, 404)
     assert persist_store.count_users() == before
     assert persist_store.get_user_by_email("sneaky@partner.test") is None
+
+
+def _july_august_orders():
+    return pd.DataFrame({
+        "store_id": ["S1", "S1", "S2"],
+        "sku": ["SKU-A", "SKU-A", "SKU-A"],
+        "order_date": pd.to_datetime(["2026-07-10", "2026-08-12", "2026-07-12"]),
+        "total_quantity": [5, 3, 10],
+    })
+
+
+def test_reward_dollar_value_round_trips(persist_store):
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        posted = client.post(
+            "/brands/coca-cola/simulate",
+            data={
+                "month": "2026-07",
+                "action": "simulate",
+                "sku": "SKU-A",
+                "proposed_points": "50",
+                "reward_name": "8 Dollar Rebate",
+                "reward_points": "100",
+                "reward_value": "8",
+            },
+        )
+        assert posted.status_code == 200
+        page = client.get("/brands/coca-cola?month=2026-07")
+    assert persist_store.rewards["coca-cola"] == [("8 Dollar Rebate", 100, 800)]
+    assert b'name="reward_value"' in page.content
+    html = page.text
+    rewards = _html_between(html, "reward-thresholds", "budget-calculator")
+    assert 'value="8"' in rewards
+    assert "Value ($)" in rewards
+    budget = _html_between(html, "budget-calculator")
+    assert "$16" in budget
+    assert "8 Dollar Rebate" in budget
+
+
+def test_budget_sku_point_totals_match_units_times_proposed(persist_store):
+    persist_store.proposed["coca-cola"] = {"SKU-A": 100}
+    persist_store.rewards["coca-cola"] = [("Rebate", 100, 800)]
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        html = TestClient(webapp.app).get("/brands/coca-cola?month=2026-07").text
+    budget = _html_between(html, "budget-calculator")
+    # Two stores (5+3 units) × $8 = $16; 8 units × 100 pts = 800 points issued.
+    assert "$16" in budget
+    assert "800" in budget
+    assert "SKU-A" in budget
+    assert "Estimated cost" in budget
+
+
+def test_grain_month_default_keeps_july_query():
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.get("/brands/coca-cola?month=2026-07")
+    assert response.status_code == 200
+    assert b"Using July 2026 ordering data" in response.content
+    assert b"stores that ordered this brand this month" in response.content
+    assert b'name="grain"' in response.content
+    assert b'value="month" selected' in response.content
+    assert b"Q3 2026" not in response.content
+
+
+def test_grain_quarter_combines_complete_months(persist_store):
+    persist_store.rewards["coca-cola"] = [("Rebate", 300, 800)]
+    orders_patch = patch.object(
+        webapp,
+        "load_orders_or_error",
+        return_value=(_july_august_orders(), {"last_refreshed_month": "2026-08"}, None),
+    )
+    skus_patch = patch.object(webapp, "load_brand_skus", return_value=_sample_skus())
+    today_patch = patch.object(webapp, "period_today", return_value=date(2026, 9, 11))
+    with orders_patch, skus_patch, today_patch:
+        client = TestClient(webapp.app)
+        monthly = client.get("/brands/coca-cola?month=2026-07")
+        quarterly = client.get("/brands/coca-cola?month=2026-07&grain=quarter")
+
+    month_html = monthly.text
+    quarter_html = quarterly.text
+    assert monthly.status_code == 200
+    assert quarterly.status_code == 200
+    assert "Using July 2026 ordering data" in month_html
+    assert "Q3 2026" in quarter_html
+    assert "July–August" in quarter_html
+    assert "September is not complete" in quarter_html
+    assert "stores that ordered this brand this quarter" in quarter_html
+    assert 'value="quarter" selected' in quarter_html
+
+    month_budget = _html_between(month_html, "budget-calculator")
+    quarter_budget = _html_between(quarter_html, "budget-calculator")
+    # July: S1=250 pts (misses 300), S2=500 (earns) → $8. Quarter: S1=400, S2=500 → $16.
+    assert "$8" in month_budget
+    assert "$16" in quarter_budget
+    assert "S2" in quarter_html
+    # Combined SKU units 18 × 50 current points = 900.
+    assert "900" in quarter_budget
+
+
+def test_create_brand_optional_reward_value(persist_store):
+    orders_patch, skus_patch = _live_catalog(persist_store)
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/create",
+            data=_create_brand_form(reward_value="8.50"),
+            files=_create_catalog_file(),
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        page = client.get("/brands/pepsi")
+    assert persist_store.rewards["pepsi"] == [("Cooler", 5000, 850)]
+    assert page.status_code == 200
+    assert 'value="8.50"' in page.text
