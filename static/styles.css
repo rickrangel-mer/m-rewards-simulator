@@ -514,15 +514,6 @@ button[value="simulate"]:hover {
   color: var(--danger);
 }
 
-.sticky-actions {
-  position: sticky;
-  bottom: 0;
-  background: color-mix(in srgb, var(--bg) 88%, white);
-  padding: 0.85rem 0 1.25rem;
-  margin: 0 0 0.5rem;
-  z-index: 5;
-}
-
 .table-wrap {
   overflow: auto;
   max-height: 420px;
