@@ -4,12 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sign in — M-Rewards Simulator</title>
+  {% include "_fonts.html" %}
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
-<body class="login-page">
+<body class="login-page" data-theme="default">
   <main class="login-card">
-    <h1>M-Rewards Simulator</h1>
-    <p class="section-caption">Sign in with the email and password Mercaso assigned you.</p>
+    <p class="login-kicker">Mercaso</p>
+    {% if product_mark %}
+    <img class="login-logo" src="{{ product_mark }}" alt="" />
+    {% endif %}
+    <h1>M-Rewards</h1>
+    <p class="section-caption">Sign in with the email Mercaso assigned you.</p>
     {% if not operator_configured %}
     <div class="error-msg">The operator account is not configured. Set OPERATOR_EMAIL and OPERATOR_PASSWORD on the web service, then restart.</div>
     {% endif %}

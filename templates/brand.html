@@ -1,8 +1,32 @@
 {% extends "base.html" %}
 {% block title %}{{ brand_label }} — M-Rewards Simulator{% endblock %}
+{% block hero %}
+<section class="page-hero">
+  <div class="page-hero-inner">
+    <div class="page-hero-brand">
+      {% if brand_mark %}
+      <img class="brand-logo" src="{{ brand_mark }}" alt="{{ brand_label }}" />
+      <h1 class="wordmark visually-hidden">{{ brand_label }}</h1>
+      {% else %}
+      <h1 class="wordmark">{{ brand_label }}</h1>
+      {% endif %}
+      <p class="page-kicker">M-Rewards simulation</p>
+    </div>
+    <div class="page-hero-meta">
+      {% if freshness %}
+      <p class="freshness">Order data through {{ freshness }}</p>
+      {% endif %}
+      <p class="page-month">{{ selected_month_label }}</p>
+    </div>
+  </div>
+  <ol class="flow-hint">
+    <li>Review results</li>
+    <li>Adjust SKU points</li>
+    <li>Set reward cutoffs</li>
+  </ol>
+</section>
+{% endblock %}
 {% block content %}
-<h1>{{ brand_label }}</h1>
-
 <form method="post" action="/brands/{{ brand }}/simulate" id="sim-form">
   <input type="hidden" name="month" value="{{ selected_month }}" />
 </form>
@@ -10,8 +34,9 @@
 <section class="panel results" id="simulation-results">
   <div class="section-header">
     <div>
+      <p class="section-eyebrow">1 · Outcome</p>
       <h2>Simulation Results</h2>
-      <p class="section-caption">Using {{ selected_month_label }} ordering data. Total Stores and % of stores are stores that ordered this brand this month.</p>
+      <p class="section-caption">This is the outcome for the selected month. Using {{ selected_month_label }} ordering data. Total Stores and % of stores are stores that ordered this brand this month.</p>
     </div>
     <div class="month-tools">
       {% if is_operator %}
@@ -103,8 +128,9 @@
 </section>
 
 <section class="panel sku-editor" id="sku-points">
+  <p class="section-eyebrow">2 · Catalog</p>
   <h2>SKU Points</h2>
-  <p class="section-caption">Search, bulk-edit, and import/export points that drive the simulation. SKU list and current points are the shared catalog. Saved for everyone.</p>
+  <p class="section-caption">Change points, then update the simulation. Search, bulk-edit, and import/export points that drive the simulation. SKU list and current points are the shared catalog. Saved for everyone.</p>
 
   <form method="post" action="/brands/{{ brand }}/import" enctype="multipart/form-data" class="import-row">
     <input type="hidden" name="month" value="{{ selected_month }}" />
@@ -181,8 +207,9 @@
 </section>
 
 <section class="panel reward-thresholds" id="reward-thresholds">
+  <p class="section-eyebrow">3 · Cutoffs</p>
   <h2>Reward Thresholds</h2>
-  <p class="section-caption">Add or remove rewards and set the point cutoffs stores must reach. Saved for everyone.</p>
+  <p class="section-caption">Stores need this many points to earn each reward. Add or remove rewards and set the point cutoffs. Saved for everyone.</p>
   <div class="rewards-grid">
     {% for name, pts in rewards %}
     <div class="reward-card">

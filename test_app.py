@@ -400,6 +400,10 @@ def test_all_brands_render_sectioned_pages():
             assert "stores that ordered this brand this month" in html
             assert "New brand" in html
             assert 'id="new-brand-dialog"' in html
+            assert "fonts.googleapis.com" in html
+            assert "M-Rewards simulation" in html
+            assert 'class="page-hero"' in html
+            assert 'class="wordmark"' in html
 
 
 def test_month_query_keeps_results_in_sync():
@@ -951,8 +955,22 @@ def test_brand_theme_css_uses_variables_and_palettes():
     assert "#e4007c" in css
     assert "#5c2d91" in css
     assert "#1e3fa8" in css
+    assert "#1e4d7b" in css
+    assert "#f3f5f7" in css
+    assert "#121820" in css
     assert "--cta" in css
     assert "--bar" in css
+    assert "--font-display" in css
+    assert "Inter" in css
+    assert "Source Serif 4" in css
+    assert "Oswald" in css
+    assert "Nunito" in css
+    assert 'body[data-theme="coca-cola"] .page-hero' in css
+    assert 'body[data-theme="monster"] .page-hero' in css
+    assert 'body[data-theme="ferrera"] .page-hero' in css
+    assert 'body[data-theme="coca-cola"] .wordmark' in css
+    assert 'body[data-theme="monster"] .wordmark' in css
+    assert 'body[data-theme="ferrera"] .wordmark' in css
     assert "#3d8f7f" not in css
     assert "rgba(15, 106, 90" not in css
     assert "circle at top left" not in css
@@ -960,6 +978,9 @@ def test_brand_theme_css_uses_variables_and_palettes():
     assert "background: var(--bar)" in css
     assert "background: var(--bg)" in css
     assert "th.sortable" in css
+    assert "body.login-page" in css
+    assert 'body.login-page[data-theme="coca-cola"]' not in css
+    assert 'body.login-page[data-theme="monster"]' not in css
 
 
 def test_table_sort_script_is_served():
@@ -967,6 +988,16 @@ def test_table_sort_script_is_served():
     js = client.get("/static/tables.js").text
     assert "sortTable" in js
     assert "aria-sort" in js
+
+
+def test_brand_mark_url_uses_attached_file(tmp_path, monkeypatch):
+    marks = tmp_path / "static" / "brand-marks"
+    marks.mkdir(parents=True)
+    (marks / "coca-cola.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>")
+    monkeypatch.setattr(webapp, "BASE_DIR", tmp_path)
+    assert webapp.brand_mark_url("coca-cola") == "/static/brand-marks/coca-cola.svg"
+    assert webapp.brand_mark_url("monster") is None
+    assert webapp.brand_mark_url(None) is None
 
 
 def _live_catalog(persist_store, orders=None):
@@ -1258,6 +1289,12 @@ def test_login_page_renders_when_logged_out():
     assert response.status_code == 200
     assert b"Sign in" in response.content
     assert b"operator account is not configured" not in response.content
+    html = response.text
+    assert 'data-theme="default"' in html
+    assert 'data-theme="coca-cola"' not in html
+    assert 'data-theme="monster"' not in html
+    assert "fonts.googleapis.com" in html
+    assert "family=Inter" in html
 
 
 def test_login_page_says_operator_not_configured_when_users_empty(persist_store):
@@ -1474,6 +1511,10 @@ def test_operator_creates_supplier_and_assigns_brands(persist_store):
     page = client.get("/users")
     assert page.status_code == 200
     assert "Add user" in page.text
+    assert 'data-theme="default"' in page.text
+    assert 'data-theme="coca-cola"' not in page.text
+    assert 'data-theme="monster"' not in page.text
+    assert "fonts.googleapis.com" in page.text
     created = client.post(
         "/users",
         data={

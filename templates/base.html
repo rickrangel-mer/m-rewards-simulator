@@ -4,16 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}M-Rewards Simulator{% endblock %}</title>
+  {% include "_fonts.html" %}
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body data-brand="{{ brand }}" data-theme="{{ theme or 'default' }}">
   <header class="topbar">
-    <div class="brand-mark">
-      <a href="/">M-Rewards Simulator</a>
-      {% if freshness %}
-      <span class="freshness">Order data through {{ freshness }}</span>
+    <a class="product-lockup" href="/">
+      {% if product_mark %}
+      <img class="product-logo" src="{{ product_mark }}" alt="" />
       {% endif %}
-    </div>
+      <span class="product-name">M-Rewards</span>
+      <span class="product-tag">Simulator</span>
+    </a>
     <div class="brand-nav-actions">
       <nav class="brand-nav">
         {% for key, meta in brands.items() %}
@@ -36,6 +38,7 @@
     </div>
     {% endif %}
   </header>
+  {% block hero %}{% endblock %}
   <main class="container">
     {% if flash %}
     <div class="flash">{{ flash }}</div>
@@ -87,7 +90,7 @@
       <label>
         Palette (optional)
         <select name="theme">
-          <option value="default">Default teal</option>
+          <option value="default">Default (Mercaso navy)</option>
           <option value="coca-cola">Coca-Cola (red/white)</option>
           <option value="monster">Monster (black + lime)</option>
           <option value="ferrera">Ferrera/Nerds (pink/purple/blue)</option>

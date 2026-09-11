@@ -1,8 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Preview catalog — {{ brand_label }}{% endblock %}
 {% block content %}
-<h1>{{ brand_label }} catalog</h1>
-<p class="section-caption">Preview of <strong>{{ filename }}</strong> before saving. Merge keeps SKUs that are not in the file. Replace makes this file the full list.</p>
+<header class="page-intro">
+  <p class="section-eyebrow">Catalog preview</p>
+  <h1>{{ brand_label }} catalog</h1>
+  <p class="section-caption">Preview of <strong>{{ filename }}</strong> before saving. Merge keeps SKUs that are not in the file. Replace makes this file the full list.</p>
+</header>
 
 <div class="metrics">
   <div><span class="metric-label">In file</span><strong>{{ "{:,}".format(diff.incoming_count) }}</strong></div>
