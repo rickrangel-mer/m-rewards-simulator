@@ -337,12 +337,12 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Simulation month" in results
     assert "Total Stores" in results
     assert "stores that ordered this brand this month" in results
-    assert "Chart clips the top 1%" in results
     assert "Stores earning each reward" in results
     assert "Points Distribution" in results
     assert "Store-level detail" in results
     assert 'class="data-table"' in results
     assert "/static/tables.js" in html
+    assert "/static/ui.js" in html
     assert "Search SKUs" not in results
     assert "Bulk point value" not in results
     assert "Import proposed points" not in results
@@ -356,11 +356,11 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Import proposed points" in sku
     assert "Export SKU CSV" in sku
     assert "Upload catalog" in sku
-    assert "Preview catalog" in sku
     assert "Download catalog Excel" in sku
+    assert 'id="upload-dialog"' in sku
+    assert "Click or drag file" in sku
     assert 'class="data-table"' in sku
     assert "SKU-A" in sku
-    assert "Saved for everyone" in sku
     assert "Simulation month" not in sku
     assert "Add Reward" not in sku
     assert "Pull order history" not in sku
@@ -369,7 +369,6 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert 'name="bulk_value"' in sku
 
     assert "Add Reward" in rewards
-    assert "Saved for everyone" in rewards
     assert "Remove" in rewards
     assert "Value ($)" in rewards
     assert 'name="reward_value"' in rewards
@@ -378,13 +377,14 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Import proposed points" not in rewards
     assert "Upload catalog" not in rewards
     assert "Pull order history" not in rewards
-    assert "Estimated program cost" not in rewards
 
     assert 'id="budget-calculator"' in budget
-    assert "Estimated program cost" in budget
+    assert "Pay all rewards" in budget
+    assert "Lowest first" in budget
+    assert "Highest first" in budget
+    assert "30% lift from Q3" in budget
     assert "Reward cost" in budget
     assert "SKU point totals" in budget
-    assert "Saved for everyone" in budget
     assert "Search SKUs" not in budget
     assert "Add Reward" not in budget
     assert "Pull order history" not in budget
@@ -419,7 +419,7 @@ def test_all_brands_render_sectioned_pages():
             assert f'data-brand="{brand}"' in html
             assert f'data-theme="{brand}"' in html
             assert "stores that ordered this brand this month" in html
-            assert "Estimated program cost" in html
+            assert "Pay all rewards" in html
             assert "New brand" in html
             assert 'id="new-brand-dialog"' in html
             assert "fonts.googleapis.com" in html
@@ -1453,7 +1453,7 @@ def test_supplier_ferrera_only_cannot_see_other_brands(persist_store):
     assert hrefs == ["/brands/ferrera"]
     assert "Ferrera" in html
     assert 'id="budget-calculator"' in html
-    assert "Estimated program cost" in html
+    assert "Pay all rewards" in html
     assert "New brand" not in html
     assert "Pull order history" not in html
     assert 'id="brand-refresh-form"' not in html
@@ -1648,8 +1648,9 @@ def test_grain_month_default_keeps_july_query():
     assert b"Using July 2026 ordering data" in response.content
     assert b"stores that ordered this brand this month" in response.content
     assert b'name="grain"' in response.content
-    assert b'value="month" selected' in response.content
-    assert b"Q3 2026" not in response.content
+    assert b'value="month"' in response.content
+    assert b"seg-btn is-on" in response.content
+    assert b">Month</a>" in response.content
 
 
 def test_grain_quarter_combines_complete_months(persist_store):
@@ -1675,7 +1676,9 @@ def test_grain_quarter_combines_complete_months(persist_store):
     assert "July–August" in quarter_html
     assert "September is not complete" in quarter_html
     assert "stores that ordered this brand this quarter" in quarter_html
-    assert 'value="quarter" selected' in quarter_html
+    assert 'value="quarter"' in quarter_html
+    assert "Q3 2026" in quarter_html
+    assert "is-on" in quarter_html
 
     month_budget = _html_between(month_html, "budget-calculator")
     quarter_budget = _html_between(quarter_html, "budget-calculator")
@@ -1702,3 +1705,33 @@ def test_create_brand_optional_reward_value(persist_store):
     assert persist_store.rewards["pepsi"] == [("Cooler", 5000, 850)]
     assert page.status_code == 200
     assert 'value="8.50"' in page.text
+
+
+def test_budget_scenarios_exclusive_redeem_and_q3_lift(persist_store):
+    persist_store.rewards["coca-cola"] = [("Low", 100, 800), ("High", 400, 2000)]
+    orders_patch = patch.object(
+        webapp,
+        "load_orders_or_error",
+        return_value=(_july_august_orders(), {"last_refreshed_month": "2026-08"}, None),
+    )
+    skus_patch = patch.object(webapp, "load_brand_skus", return_value=_sample_skus())
+    today_patch = patch.object(webapp, "period_today", return_value=date(2026, 9, 11))
+    with orders_patch, skus_patch, today_patch:
+        client = TestClient(webapp.app)
+        stacked = client.get("/brands/coca-cola?month=2026-07&grain=quarter")
+        lowest = client.get("/brands/coca-cola?month=2026-07&grain=quarter&scenario=lowest")
+        highest = client.get("/brands/coca-cola?month=2026-07&grain=quarter&scenario=highest")
+        lifted = client.get("/brands/coca-cola?month=2026-07&scenario=q3_lift")
+
+    # Q3: S1=400 pts, S2=500 pts. Both earn Low ($8). Only S1/S2 both earn High ($20) too.
+    # Pay all: 2*$8 + 2*$20 = $56. Lowest: 2*$8 = $16. Highest: 2*$20 = $40.
+    assert "Pay all rewards" in stacked.text
+    assert "$56" in _html_between(stacked.text, "budget-calculator")
+    assert "$16" in _html_between(lowest.text, "budget-calculator")
+    assert "Lowest first" in lowest.text
+    assert "$40" in _html_between(highest.text, "budget-calculator")
+    assert "Highest first" in highest.text
+    assert "30% lift from Q3 2026" in lifted.text
+    # Lifted units 18*1.3=23.4; points still both clear 400. Cost stays stacked $56,
+    # but SKU points issued become 18*50*1.3 = 1170.
+    assert "1,170" in _html_between(lifted.text, "budget-calculator") or "1170" in _html_between(lifted.text, "budget-calculator")

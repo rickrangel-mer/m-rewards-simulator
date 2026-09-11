@@ -64,7 +64,9 @@ from data import (
 from simulator import (
     BRAND_DEFAULTS,
     available_months,
+    available_quarters,
     budget_from_results,
+    build_budget_scenarios,
     build_points_lookup,
     cents_to_dollar_input,
     compute_store_penetration,
@@ -74,9 +76,11 @@ from simulator import (
     orders_for_period,
     parse_grain,
     parse_imported_points,
+    parse_scenario,
     period_copy,
     period_months,
     reward_thresholds,
+    SCENARIO_ALL,
     simulate,
     sku_point_totals,
     summarize_results,
@@ -385,6 +389,33 @@ def empty_sku_totals() -> dict:
     return {"skus": [], "total_units": 0.0, "total_points_issued": 0.0}
 
 
+def empty_scenarios(rewards: list[tuple] | None = None) -> list[dict]:
+    budget = empty_budget(rewards)
+    sku = empty_sku_totals()
+    return [
+        {"key": "all", "label": "Pay all rewards", "hint": "Every reward each store qualifies for", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
+        {"key": "lowest", "label": "Lowest first", "hint": "Each store redeems the cheapest qualifying reward", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
+        {"key": "highest", "label": "Highest first", "hint": "Each store redeems the most expensive qualifying reward", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
+        {"key": "q3_lift", "label": "30% lift from Q3", "hint": "Q3 units × 1.3, then pay all rewards", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
+    ]
+
+
+def select_scenario(scenarios: list[dict], scenario: str) -> dict:
+    scenario = parse_scenario(scenario)
+    for row in scenarios:
+        if row["key"] == scenario:
+            return row
+    return scenarios[0] if scenarios else {
+        "key": SCENARIO_ALL,
+        "budget": empty_budget([]),
+        "sku_totals": empty_sku_totals(),
+        "label": "Pay all rewards",
+        "hint": "",
+        "total_cents": 0,
+        "total_label": "$0",
+    }
+
+
 def set_rewards(brand: str, rewards: list[tuple]) -> None:
     save_brand_rewards(brand, [normalize_reward(r) for r in rewards])
 
@@ -559,9 +590,11 @@ def run_brand_simulation(
     rewards: list[tuple],
     grain: str = "month",
     today: date | None = None,
+    scenario: str = SCENARIO_ALL,
 ):
     year, mon = parse_month(month_label)
     grain = parse_grain(grain)
+    scenario = parse_scenario(scenario)
     today = today or period_today()
     valid = set(skus_df["sku"].astype(str))
     points_lookup = build_points_lookup(skus_df, proposed)
@@ -573,10 +606,27 @@ def run_brand_simulation(
     thresholds = reward_thresholds(rewards)
     store_points = simulate(period_orders, sku_to_title, points_lookup, thresholds)
     results = summarize_results(store_points, thresholds)
+    scenarios = build_budget_scenarios(
+        store_points,
+        rewards,
+        period_orders,
+        skus_df,
+        proposed,
+        raw,
+        year,
+        valid,
+        sku_to_title,
+        points_lookup,
+        today=today,
+    )
+    chosen = select_scenario(scenarios, scenario)
     return {
         "results": results,
-        "budget": budget_from_results(results, rewards),
-        "sku_totals": sku_point_totals(period_orders, skus_df, proposed),
+        "budget": chosen["budget"],
+        "sku_totals": chosen["sku_totals"],
+        "scenarios": scenarios,
+        "scenario": chosen["key"],
+        "scenario_meta": chosen,
         "period_months": months,
         "period": period_copy(grain, year, mon, months, today=today),
     }
@@ -596,8 +646,10 @@ def brand_page_context(
     flash=None,
     bulk_value: int = 100,
     grain: str = "month",
+    scenario: str = SCENARIO_ALL,
 ):
     grain = parse_grain(grain)
+    scenario = parse_scenario(scenario)
     rows = apply_proposed_to_rows(skus_df, proposed)
     if search:
         needle = search.lower()
@@ -612,16 +664,21 @@ def brand_page_context(
 
     if selected_month:
         sim = run_brand_simulation(
-            raw, skus_df, selected_month, proposed, rewards, grain=grain
+            raw, skus_df, selected_month, proposed, rewards, grain=grain, scenario=scenario
         )
         results = sim["results"]
         budget = sim["budget"]
         sku_totals = sim["sku_totals"]
         period = sim["period"]
+        scenarios = sim["scenarios"]
+        scenario = sim["scenario"]
+        scenario_meta = sim["scenario_meta"]
     else:
         results = empty_results(rewards)
-        budget = empty_budget(rewards)
-        sku_totals = empty_sku_totals()
+        scenarios = empty_scenarios(rewards)
+        scenario_meta = select_scenario(scenarios, scenario)
+        budget = scenario_meta["budget"]
+        sku_totals = scenario_meta["sku_totals"]
         period = {
             "grain": grain,
             "period_label": "no order months yet",
@@ -644,6 +701,10 @@ def brand_page_context(
             format_month_label(selected_month) if selected_month else "no order months yet"
         ),
         "grain": grain,
+        "quarter_options": available_quarters(months),
+        "scenario": scenario,
+        "scenarios": scenarios,
+        "scenario_meta": scenario_meta,
         "period": period,
         "rows": rows,
         "rewards": [normalize_reward(r) for r in rewards],
@@ -666,12 +727,14 @@ def brand_page(
     month: str | None = None,
     q: str | None = None,
     grain: str | None = None,
+    scenario: str | None = None,
 ):
     brand, denied = require_brand(request, brand)
     if denied:
         return denied
 
     grain = parse_grain(grain)
+    scenario = parse_scenario(scenario)
     raw, state, error = load_orders_or_error()
     if error:
         return error_page(request, "Data unavailable", error, 503)
@@ -698,6 +761,7 @@ def brand_page(
         search=(q or "").strip(),
         flash=flash,
         grain=grain,
+        scenario=scenario,
     )
     ctx["open_new_brand"] = open_new_brand
     return TEMPLATES.TemplateResponse(request, "brand.html", ctx)
@@ -746,12 +810,14 @@ async def simulate_brand(
     bulk_value: int = Form(100),
     action: str = Form("simulate"),
     grain: str = Form("month"),
+    scenario: str = Form("all"),
 ):
     brand, denied = require_brand(request, brand)
     if denied:
         return denied
 
     grain = parse_grain(grain)
+    scenario = parse_scenario(scenario)
     form = await request.form()
     rewards = parse_reward_form(form)
     if not rewards:
@@ -769,7 +835,7 @@ async def simulate_brand(
             patch[str(sku)] = int(bulk_value)
         set_proposed(brand, patch)
         request.session["flash"] = f"Applied {bulk_value} points to {len(selected)} SKUs."
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario)}", status_code=303)
 
     if action == "add_reward":
         new_name = (form.get("new_reward_name") or "").strip() or f"Reward {len(rewards) + 1}"
@@ -781,7 +847,7 @@ async def simulate_brand(
         rewards.append((new_name, new_pts, new_cents))
         set_rewards(brand, rewards)
         set_proposed(brand, patch)
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain, scenario=scenario)}", status_code=303)
 
     if action.startswith("remove_reward_"):
         idx = int(action.split("_")[-1])
@@ -789,7 +855,7 @@ async def simulate_brand(
             rewards.pop(idx)
         set_rewards(brand, rewards)
         set_proposed(brand, patch)
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain, scenario=scenario)}", status_code=303)
 
     proposed = set_proposed(brand, patch)
 
@@ -818,6 +884,7 @@ async def simulate_brand(
             search=(q or "").strip(),
             bulk_value=bulk_value,
             grain=grain,
+            scenario=scenario,
         ),
     )
 
@@ -888,10 +955,12 @@ def export_skus(request: Request, brand: str):
     )
 
 
-def _month_query(month: str, q: str = "", grain: str = "month") -> str:
+def _month_query(month: str, q: str = "", grain: str = "month", scenario: str = "all") -> str:
     qs = f"?month={month}"
     if parse_grain(grain) == "quarter":
         qs += "&grain=quarter"
+    if parse_scenario(scenario) != SCENARIO_ALL:
+        qs += f"&scenario={parse_scenario(scenario)}"
     if q:
         qs += f"&q={q}"
     return qs
