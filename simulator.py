@@ -230,13 +230,49 @@ def format_usd(cents) -> str:
     return f"-{text}" if negative else text
 
 
-def budget_from_results(results: dict, rewards) -> dict:
-    """Estimated program cost: earners in this period × each reward's dollar value."""
-    counts = {r["name"]: int(r.get("count") or 0) for r in results.get("rewards") or []}
+SCENARIO_ALL = "all"
+SCENARIO_LOWEST = "lowest"
+SCENARIO_HIGHEST = "highest"
+SCENARIO_Q3_LIFT = "q3_lift"
+SCENARIOS = (SCENARIO_ALL, SCENARIO_LOWEST, SCENARIO_HIGHEST, SCENARIO_Q3_LIFT)
+Q3_LIFT_FACTOR = 1.3
+
+
+def parse_scenario(value: str | None) -> str:
+    key = (value or SCENARIO_ALL).strip().lower()
+    return key if key in SCENARIOS else SCENARIO_ALL
+
+
+def available_quarters(months: list[str]) -> list[dict]:
+    """Unique calendar quarters represented in available year-month keys."""
+    seen = set()
+    out = []
+    for stamp in months or []:
+        try:
+            year = int(str(stamp)[:4])
+            month = int(str(stamp)[5:7])
+        except (TypeError, ValueError):
+            continue
+        q = quarter_of(year, month)
+        key = (year, q)
+        if key in seen:
+            continue
+        seen.add(key)
+        first = (q - 1) * 3 + 1
+        out.append({
+            "year": year,
+            "quarter": q,
+            "month": f"{year}-{first:02d}",
+            "label": f"Q{q} {year}",
+        })
+    return out
+
+
+def budget_from_counts(counts: dict, rewards) -> dict:
     lines = []
     total_cents = 0
     for name, pts, cents in (normalize_reward(r) for r in rewards):
-        count = counts.get(name, 0)
+        count = int(counts.get(name, 0) or 0)
         line_cents = count * cents
         lines.append({
             "name": name,
@@ -253,6 +289,48 @@ def budget_from_results(results: dict, rewards) -> dict:
         "total_cents": total_cents,
         "total_label": format_usd(total_cents),
     }
+
+
+def budget_from_results(results: dict, rewards) -> dict:
+    """Estimated program cost: earners in this period × each reward's dollar value."""
+    counts = {r["name"]: int(r.get("count") or 0) for r in results.get("rewards") or []}
+    return budget_from_counts(counts, rewards)
+
+
+def redeem_counts(store_points: pd.DataFrame, rewards, mode: str = SCENARIO_ALL) -> dict[str, int]:
+    """How many stores pay each reward under stacked vs exclusive redeem rules."""
+    normalized = [normalize_reward(r) for r in rewards]
+    names = [name for name, _pts, _cents in normalized]
+    empty = {name: 0 for name in names}
+    if store_points is None or store_points.empty:
+        return empty
+    if mode not in (SCENARIO_LOWEST, SCENARIO_HIGHEST):
+        return {
+            name: int(store_points[name].sum()) if name in store_points.columns else 0
+            for name in names
+        }
+    counts = dict(empty)
+    for _, row in store_points.iterrows():
+        qualified = [
+            item for item in normalized
+            if item[0] in row.index and bool(row[item[0]])
+        ]
+        if not qualified:
+            continue
+        key = (lambda item: (item[2], item[1]))
+        pick = min(qualified, key=key) if mode == SCENARIO_LOWEST else max(qualified, key=key)
+        counts[pick[0]] += 1
+    return counts
+
+
+def lift_orders(period_orders: pd.DataFrame, factor: float = Q3_LIFT_FACTOR) -> pd.DataFrame:
+    if period_orders is None or period_orders.empty:
+        return period_orders if period_orders is not None else pd.DataFrame(
+            columns=["store_id", "sku", "total_quantity"]
+        )
+    out = period_orders.copy()
+    out["total_quantity"] = out["total_quantity"] * float(factor)
+    return out
 
 
 def sku_point_totals(period_orders: pd.DataFrame, skus_df: pd.DataFrame, proposed: dict[str, int] | None = None) -> dict:
@@ -309,6 +387,55 @@ def simulate(month_orders, sku_to_title, points_lookup, reward_thresholds) -> pd
         store_points[reward_name] = store_points["total_points"] >= threshold
 
     return store_points
+
+
+def build_budget_scenarios(
+    store_points: pd.DataFrame,
+    rewards,
+    period_orders: pd.DataFrame,
+    skus_df: pd.DataFrame,
+    proposed: dict | None,
+    raw: pd.DataFrame,
+    year: int,
+    skus: set,
+    sku_to_title: dict,
+    points_lookup: dict,
+    today: date | None = None,
+    factor: float = Q3_LIFT_FACTOR,
+) -> list[dict]:
+    """Pay-all, exclusive redeem, and 30% lift from Q3 of `year`."""
+    proposed = proposed or {}
+    thresholds = reward_thresholds(rewards)
+    base_sku = sku_point_totals(period_orders, skus_df, proposed)
+    q3_orders = orders_for_period(raw, int(year), 7, skus, grain="quarter", today=today)
+    lifted = lift_orders(q3_orders, factor)
+    lifted_points = simulate(lifted, sku_to_title, points_lookup, thresholds)
+    pct = int(round((factor - 1) * 100))
+    specs = [
+        (SCENARIO_ALL, "Pay all rewards", "Every reward each store qualifies for", redeem_counts(store_points, rewards, SCENARIO_ALL), base_sku),
+        (SCENARIO_LOWEST, "Lowest first", "Each store redeems the cheapest qualifying reward", redeem_counts(store_points, rewards, SCENARIO_LOWEST), base_sku),
+        (SCENARIO_HIGHEST, "Highest first", "Each store redeems the most expensive qualifying reward", redeem_counts(store_points, rewards, SCENARIO_HIGHEST), base_sku),
+        (
+            SCENARIO_Q3_LIFT,
+            f"{pct}% lift from Q3 {year}",
+            f"Q3 {year} units × {factor:g}, then pay all rewards",
+            redeem_counts(lifted_points, rewards, SCENARIO_ALL),
+            sku_point_totals(lifted, skus_df, proposed),
+        ),
+    ]
+    scenarios = []
+    for key, label, hint, counts, sku_totals in specs:
+        budget = budget_from_counts(counts, rewards)
+        scenarios.append({
+            "key": key,
+            "label": label,
+            "hint": hint,
+            "budget": budget,
+            "sku_totals": sku_totals,
+            "total_cents": budget["total_cents"],
+            "total_label": budget["total_label"],
+        })
+    return scenarios
 
 
 def parse_imported_points(file_bytes: bytes, filename: str):
