@@ -234,6 +234,20 @@ def first_allowed_brand(user) -> str | None:
     return next(iter(brands))
 
 
+def brand_mark_url(slug: str | None) -> str | None:
+    """Return /static/brand-marks/{slug}.{ext} when Rick has attached a logo."""
+    if not slug:
+        return None
+    directory = BASE_DIR / "static" / "brand-marks"
+    stem = str(slug).strip().lower()
+    if not stem or not directory.is_dir():
+        return None
+    for ext in (".svg", ".png", ".webp"):
+        if (directory / f"{stem}{ext}").is_file():
+            return f"/static/brand-marks/{stem}{ext}"
+    return None
+
+
 def page_chrome(brand: str | None = None, user=None) -> dict:
     brands = allowed_brands(user) if user is not None else registry_map()
     meta = brands.get(brand or "") or {}
@@ -244,6 +258,8 @@ def page_chrome(brand: str | None = None, user=None) -> dict:
         "brand": brand or "",
         "brand_label": meta.get("label", ""),
         "theme": theme,
+        "brand_mark": brand_mark_url(brand),
+        "product_mark": brand_mark_url("mercaso"),
         "brands": brands,
         "palettes": PALETTE_THEMES,
         "user_email": (user or {}).get("email") or "",
@@ -459,6 +475,7 @@ def login_page(request: Request, next: str = "/"):
             "next": _safe_next(next),
             "flash": request.session.pop("flash", None),
             "operator_configured": operator_configured,
+            "product_mark": brand_mark_url("mercaso"),
         },
     )
 
@@ -480,6 +497,7 @@ async def login_submit(request: Request):
                 "flash": "Invalid email or password.",
                 "operator_configured": count_users() > 0,
                 "email": email,
+                "product_mark": brand_mark_url("mercaso"),
             },
             status_code=200,
         )

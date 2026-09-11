@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ title }} — M-Rewards{% endblock %}
 {% block content %}
-<h1>{{ title }}</h1>
+<header class="page-intro">
+  <h1>{{ title }}</h1>
+</header>
 <p class="error-msg">{{ message }}</p>
 <p><a class="button" href="/">Back to simulator</a></p>
 {% endblock %}
