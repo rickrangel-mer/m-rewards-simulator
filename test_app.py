@@ -979,6 +979,10 @@ def test_brand_theme_css_uses_variables_and_palettes():
     assert "background: var(--bg)" in css
     assert "th.sortable" in css
     assert "body.login-page" in css
+    assert ".workspace" in css
+    assert ".results-board" in css
+    assert "--page-max" in css
+    assert "1760px" in css
     assert 'body.login-page[data-theme="coca-cola"]' not in css
     assert 'body.login-page[data-theme="monster"]' not in css
 

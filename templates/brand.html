@@ -64,33 +64,39 @@
   </div>
 
   {% if results %}
-  <div class="metrics">
-    <div><span class="metric-label">Total Stores</span><strong>{{ "{:,}".format(results.total_stores) }}</strong></div>
-    <div><span class="metric-label">Avg Points/Store</span><strong>{{ "{:,.0f}".format(results.avg_points) }}</strong></div>
-    <div><span class="metric-label">Median Points/Store</span><strong>{{ "{:,.0f}".format(results.median_points) }}</strong></div>
-    <div><span class="metric-label">Max Points/Store</span><strong>{{ "{:,.0f}".format(results.max_points) }}</strong></div>
-  </div>
+  <div class="results-board">
+    <div class="results-kpis">
+      <div class="metrics">
+        <div><span class="metric-label">Total Stores</span><strong>{{ "{:,}".format(results.total_stores) }}</strong></div>
+        <div><span class="metric-label">Avg Points/Store</span><strong>{{ "{:,.0f}".format(results.avg_points) }}</strong></div>
+        <div><span class="metric-label">Median Points/Store</span><strong>{{ "{:,.0f}".format(results.median_points) }}</strong></div>
+        <div><span class="metric-label">Max Points/Store</span><strong>{{ "{:,.0f}".format(results.max_points) }}</strong></div>
+      </div>
 
-  <h3>Stores earning each reward</h3>
-  <div class="metrics reward-metrics">
-    {% for r in results.rewards %}
-    <div class="reward-result">
-      <span class="metric-label">{{ r.name }}</span>
-      <strong class="reward-count">{{ "{:,}".format(r.count) }} stores</strong>
-      <span class="metric-sub">{{ r.pct }}% of stores · {{ "{:,}".format(r.threshold) }} pts needed</span>
+      <h3>Stores earning each reward</h3>
+      <div class="metrics reward-metrics">
+        {% for r in results.rewards %}
+        <div class="reward-result">
+          <span class="metric-label">{{ r.name }}</span>
+          <strong class="reward-count">{{ "{:,}".format(r.count) }} stores</strong>
+          <span class="metric-sub">{{ r.pct }}% of stores · {{ "{:,}".format(r.threshold) }} pts needed</span>
+        </div>
+        {% endfor %}
+      </div>
     </div>
-    {% endfor %}
-  </div>
 
-  <h3>Points Distribution</h3>
-  <p class="section-caption">Chart clips the top 1% of points for binning only. Total Stores, averages, and reward counts use every store.</p>
-  {% set max_count = results.histogram | map(attribute='count') | max if results.histogram else 1 %}
-  <div class="histogram">
-    {% for bin in results.histogram %}
-    <div class="bar" title="{{ bin.label }}: {{ bin.count }}">
-      <div class="bar-fill" style="height: {{ (bin.count / max_count * 100) if max_count else 0 }}%"></div>
+    <div class="results-chart">
+      <h3>Points Distribution</h3>
+      <p class="section-caption">Chart clips the top 1% of points for binning only. Total Stores, averages, and reward counts use every store.</p>
+      {% set max_count = results.histogram | map(attribute='count') | max if results.histogram else 1 %}
+      <div class="histogram">
+        {% for bin in results.histogram %}
+        <div class="bar" title="{{ bin.label }}: {{ bin.count }}">
+          <div class="bar-fill" style="height: {{ (bin.count / max_count * 100) if max_count else 0 }}%"></div>
+        </div>
+        {% endfor %}
+      </div>
     </div>
-    {% endfor %}
   </div>
 
   <details>
@@ -127,11 +133,17 @@
   {% endif %}
 </section>
 
+<div class="workspace">
 <section class="panel sku-editor" id="sku-points">
-  <p class="section-eyebrow">2 · Catalog</p>
-  <h2>SKU Points</h2>
-  <p class="section-caption">Change points, then update the simulation. Search, bulk-edit, and import/export points that drive the simulation. SKU list and current points are the shared catalog. Saved for everyone.</p>
+  <div class="section-header">
+    <div>
+      <p class="section-eyebrow">2 · Catalog</p>
+      <h2>SKU Points</h2>
+      <p class="section-caption">Change points, then update the simulation. Search, bulk-edit, and import/export points that drive the simulation. SKU list and current points are the shared catalog. Saved for everyone.</p>
+    </div>
+  </div>
 
+  <div class="data-toolbar">
   <form method="post" action="/brands/{{ brand }}/import" enctype="multipart/form-data" class="import-row">
     <input type="hidden" name="month" value="{{ selected_month }}" />
     <label class="file-label">
@@ -139,7 +151,7 @@
       <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
     </label>
     <button type="submit" class="button secondary">Import</button>
-    <a class="button secondary" href="/brands/{{ brand }}/export">Export SKU CSV</a>
+    <a class="button ghost" href="/brands/{{ brand }}/export">Export SKU CSV</a>
   </form>
 
   <form method="post" action="/brands/{{ brand }}/catalog" enctype="multipart/form-data" class="import-row" id="catalog-upload">
@@ -149,7 +161,7 @@
       <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
     </label>
     <button type="submit" class="button secondary">Preview catalog</button>
-    <a class="button secondary" href="/brands/{{ brand }}/catalog.xlsx">Download catalog Excel</a>
+    <a class="button ghost" href="/brands/{{ brand }}/catalog.xlsx">Download catalog Excel</a>
   </form>
 
   <div class="controls sku-tools">
@@ -162,6 +174,7 @@
       <input form="sim-form" type="number" name="bulk_value" min="0" step="50" value="{{ bulk_value or 100 }}" />
     </label>
     <button form="sim-form" type="submit" name="action" value="bulk_apply" class="button secondary">Apply to selected</button>
+  </div>
   </div>
 
   <div class="table-wrap">
@@ -206,6 +219,7 @@
   </div>
 </section>
 
+<div class="workspace-side">
 <section class="panel reward-thresholds" id="reward-thresholds">
   <p class="section-eyebrow">3 · Cutoffs</p>
   <h2>Reward Thresholds</h2>
@@ -228,5 +242,7 @@
 
 <div class="actions">
   <button form="sim-form" type="submit" name="action" value="simulate" class="button primary">Update Simulation</button>
+</div>
+</div>
 </div>
 {% endblock %}
