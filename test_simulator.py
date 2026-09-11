@@ -219,3 +219,26 @@ def test_dollars_to_cents_and_format():
     assert dollars_to_cents("") == 0
     assert format_usd(1600) == "$16"
     assert format_usd(850) == "$8.50"
+
+
+def test_redeem_counts_exclusive_lowest_and_highest():
+    from simulator import redeem_counts
+
+    store_points = pd.DataFrame({
+        "store_id": ["S1", "S2"],
+        "total_points": [400, 150],
+        "Low": [True, True],
+        "High": [True, False],
+    })
+    rewards = [("Low", 100, 800), ("High", 400, 2000)]
+    assert redeem_counts(store_points, rewards, "all") == {"Low": 2, "High": 1}
+    assert redeem_counts(store_points, rewards, "lowest") == {"Low": 2, "High": 0}
+    assert redeem_counts(store_points, rewards, "highest") == {"Low": 1, "High": 1}
+
+
+def test_available_quarters_from_months():
+    from simulator import available_quarters
+
+    qs = available_quarters(["2026-07", "2026-08", "2026-04"])
+    assert [row["label"] for row in qs] == ["Q3 2026", "Q2 2026"]
+    assert qs[0]["month"] == "2026-07"

@@ -254,7 +254,7 @@ a:hover { text-decoration: underline; }
 .page-hero {
   background: var(--hero-bg);
   color: var(--hero-ink);
-  padding: 1.1rem var(--page-gutter) 1rem;
+  padding: 0.75rem var(--page-gutter);
   border-bottom: 1px solid var(--line);
 }
 
@@ -1221,3 +1221,219 @@ body[data-theme="ferrera"] .brand-nav a.active {
   background: #5c2d91;
   border-color: #5c2d91;
 }
+
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.period-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.65rem;
+}
+
+.seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  background: color-mix(in srgb, var(--bg) 70%, white);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.seg-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 650;
+  font-size: 0.82rem;
+  padding: 0.38rem 0.85rem;
+  border-radius: 999px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.seg-btn:hover {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.seg-btn.is-on {
+  background: var(--cta);
+  color: var(--on-cta);
+}
+
+.month-select select {
+  min-width: 11rem;
+}
+
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 1rem;
+}
+
+.scenario-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg) 55%, white);
+  text-decoration: none;
+  color: inherit;
+}
+
+.scenario-card:hover {
+  text-decoration: none;
+  border-color: var(--accent);
+}
+
+.scenario-card.is-on {
+  border-color: var(--cta);
+  background: color-mix(in srgb, var(--accent-soft) 70%, white);
+  box-shadow: inset 0 0 0 1px var(--cta);
+}
+
+.scenario-card strong {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.upload-dialog {
+  border: 0;
+  border-radius: 18px;
+  padding: 1.2rem 1.25rem 1.15rem;
+  width: min(32rem, calc(100% - 2rem));
+  background: #f4f4f5;
+  color: var(--ink);
+  box-shadow: 0 16px 50px rgba(18, 24, 32, 0.22);
+}
+
+.upload-dialog::backdrop {
+  background: rgba(18, 24, 32, 0.45);
+}
+
+.upload-dialog-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.85rem;
+}
+
+.upload-dialog-head h2 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.icon-close {
+  border: 0;
+  background: transparent;
+  font-size: 1.4rem;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.15rem 0.4rem;
+  border-radius: 8px;
+}
+
+.icon-close:hover {
+  background: rgba(18, 24, 32, 0.06);
+}
+
+.upload-dialog .upload-hint {
+  margin: 0.35rem 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.dropzone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 10.5rem;
+  padding: 1.4rem 1rem;
+  border: 1.5px dashed color-mix(in srgb, var(--line) 40%, #c9cdd3);
+  border-radius: 16px;
+  background: #fafafa;
+  text-align: center;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.dropzone strong {
+  font-size: 1.02rem;
+}
+
+.dropzone span,
+.dropzone em {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-style: normal;
+}
+
+.dropzone-icon {
+  color: var(--accent);
+  margin-bottom: 0.35rem;
+}
+
+.dropzone.is-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 80%, white);
+}
+
+.dropzone input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  max-width: none;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.upload-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.upload-dialog-actions .button.primary {
+  min-width: 4.5rem;
+  border-radius: 10px;
+}
+
+.upload-dialog-actions .button.secondary {
+  border-radius: 10px;
+  background: #fff;
+}
+
+.section-header .section-caption {
+  max-width: 40rem;
+}
+
+@media (max-width: 1100px) {
+  .scenario-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 720px) {
+  .scenario-grid { grid-template-columns: 1fr; }
+  .period-bar, .seg { width: 100%; }
+}
+

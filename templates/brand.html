@@ -10,7 +10,7 @@
       {% else %}
       <h1 class="wordmark">{{ brand_label }}</h1>
       {% endif %}
-      <p class="page-kicker">M-Rewards simulation</p>
+      <p class="page-kicker">M-Rewards simulation{% if freshness %} · through {{ freshness }}{% endif %}</p>
     </div>
     <div class="page-hero-meta">
       {% if freshness %}
@@ -19,26 +19,21 @@
       <p class="page-month">{{ period.period_label if period else selected_month_label }}</p>
     </div>
   </div>
-  <ol class="flow-hint">
-    <li>Review results</li>
-    <li>Adjust SKU points</li>
-    <li>Set reward cutoffs</li>
-    <li>Review budget</li>
-  </ol>
 </section>
 {% endblock %}
 {% block content %}
 <form method="post" action="/brands/{{ brand }}/simulate" id="sim-form">
   <input type="hidden" name="month" value="{{ selected_month }}" />
   <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
+  <input type="hidden" name="scenario" value="{{ scenario or 'all' }}" />
 </form>
 
 <section class="panel results" id="simulation-results">
   <div class="section-header">
     <div>
-      <p class="section-eyebrow">1 · Outcome</p>
+      <p class="section-eyebrow">Results</p>
       <h2>Simulation Results</h2>
-      <p class="section-caption">This is the outcome for the selected {{ 'quarter' if grain == 'quarter' else 'month' }}. {{ period.using_data }}. Total Stores and % of stores are {{ period.inclusion }}.</p>
+      <p class="section-caption">{{ period.using_data }}. Total Stores and % of stores are {{ period.inclusion }}.</p>
     </div>
     <div class="month-tools">
       {% if is_operator %}
@@ -46,29 +41,34 @@
         <button type="submit" class="button secondary">Pull order history</button>
       </form>
       {% endif %}
-      <form method="get" action="/brands/{{ brand }}" class="month-picker" id="month-form">
-      {% if search %}
-      <input type="hidden" name="q" value="{{ search }}" />
-      {% endif %}
-      <label>
-        Period
-        <select name="grain" onchange="this.form.submit()">
-          <option value="month" {% if grain != 'quarter' %}selected{% endif %}>Month</option>
-          <option value="quarter" {% if grain == 'quarter' %}selected{% endif %}>Quarter</option>
-        </select>
-      </label>
-      <label>
-        Simulation month
-        <select name="month" onchange="this.form.submit()">
-          {% for value, label in month_options %}
-          <option value="{{ value }}" {% if value == selected_month %}selected{% endif %}>{{ label }}</option>
-          {% else %}
-          <option value="" disabled selected>No order months yet</option>
+      <form method="get" action="/brands/{{ brand }}" class="period-bar" id="month-form">
+        {% if search %}
+        <input type="hidden" name="q" value="{{ search }}" />
+        {% endif %}
+        {% if scenario and scenario != 'all' %}
+        <input type="hidden" name="scenario" value="{{ scenario }}" />
+        {% endif %}
+        <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
+        <div class="seg" role="group" aria-label="Period">
+          <a class="seg-btn{% if grain != 'quarter' %} is-on{% endif %}"
+             href="/brands/{{ brand }}?month={{ selected_month }}{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}{% if search %}&amp;q={{ search }}{% endif %}">Month</a>
+          {% for qopt in quarter_options %}
+          <a class="seg-btn{% if grain == 'quarter' and period.period_label == qopt.label %} is-on{% endif %}"
+             href="/brands/{{ brand }}?month={{ qopt.month }}&amp;grain=quarter{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}{% if search %}&amp;q={{ search }}{% endif %}">{{ qopt.label }}</a>
           {% endfor %}
-        </select>
-      </label>
-      <noscript><button type="submit" class="button secondary">Show period</button></noscript>
-    </form>
+        </div>
+        <label class="month-select">
+          Simulation month
+          <select name="month" onchange="this.form.submit()">
+            {% for value, label in month_options %}
+            <option value="{{ value }}" {% if value == selected_month %}selected{% endif %}>{{ label }}</option>
+            {% else %}
+            <option value="" disabled selected>No order months yet</option>
+            {% endfor %}
+          </select>
+        </label>
+        <noscript><button type="submit" class="button secondary">Show period</button></noscript>
+      </form>
     </div>
   </div>
 
@@ -96,7 +96,6 @@
 
     <div class="results-chart">
       <h3>Points Distribution</h3>
-      <p class="section-caption">Chart clips the top 1% of points for binning only. Total Stores, averages, and reward counts use every store.</p>
       {% set max_count = results.histogram | map(attribute='count') | max if results.histogram else 1 %}
       <div class="histogram">
         {% for bin in results.histogram %}
@@ -146,35 +145,18 @@
 <section class="panel sku-editor" id="sku-points">
   <div class="section-header">
     <div>
-      <p class="section-eyebrow">2 · Catalog</p>
+      <p class="section-eyebrow">Catalog</p>
       <h2>SKU Points</h2>
-      <p class="section-caption">Change points, then update the simulation. Search, bulk-edit, and import/export points that drive the simulation. SKU list and current points are the shared catalog. Saved for everyone.</p>
+    </div>
+    <div class="toolbar-actions">
+      <button type="button" class="button secondary" id="upload-open">Upload</button>
+      <a class="button ghost" href="/brands/{{ brand }}/export">Export SKU CSV</a>
+      <a class="button ghost" href="/brands/{{ brand }}/catalog.xlsx">Download catalog Excel</a>
+      <button form="sim-form" type="submit" name="action" value="simulate" class="button primary">Update Simulation</button>
     </div>
   </div>
 
   <div class="data-toolbar">
-  <form method="post" action="/brands/{{ brand }}/import" enctype="multipart/form-data" class="import-row">
-    <input type="hidden" name="month" value="{{ selected_month }}" />
-    <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
-    <label class="file-label">
-      Import proposed points (CSV/Excel with sku + points)
-      <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
-    </label>
-    <button type="submit" class="button secondary">Import</button>
-    <a class="button ghost" href="/brands/{{ brand }}/export">Export SKU CSV</a>
-  </form>
-
-  <form method="post" action="/brands/{{ brand }}/catalog" enctype="multipart/form-data" class="import-row" id="catalog-upload">
-    <input type="hidden" name="month" value="{{ selected_month }}" />
-    <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
-    <label class="file-label">
-      Upload catalog (Excel/CSV with sku, product_title, current_points)
-      <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
-    </label>
-    <button type="submit" class="button secondary">Preview catalog</button>
-    <a class="button ghost" href="/brands/{{ brand }}/catalog.xlsx">Download catalog Excel</a>
-  </form>
-
   <div class="controls sku-tools">
     <label>
       Search SKUs
@@ -187,6 +169,48 @@
     <button form="sim-form" type="submit" name="action" value="bulk_apply" class="button secondary">Apply to selected</button>
   </div>
   </div>
+
+  <dialog class="upload-dialog" id="upload-dialog">
+    <div class="upload-dialog-head">
+      <h2>Upload file</h2>
+      <button type="button" class="icon-close" id="upload-close" aria-label="Close">×</button>
+    </div>
+    <label>
+      Source
+      <select id="upload-source">
+        <option value="points">Import proposed points</option>
+        <option value="catalog">Upload catalog</option>
+      </select>
+    </label>
+    <p class="upload-hint" id="upload-hint">CSV/Excel with sku + points</p>
+    <label class="dropzone" id="upload-dropzone">
+      <input type="file" id="upload-file" accept=".csv,.xlsx,.xls" />
+      <span class="dropzone-icon" aria-hidden="true">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+          <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6H9l1.2-1.6A2 2 0 0 1 11.8 4h.4a2 2 0 0 1 1.6.8L15 6h2.5A2.5 2.5 0 0 1 20 8.5V17a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V8.5Z" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M12 10.5v6M9.5 13 12 10.5 14.5 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <strong>Click or drag file to this area to upload</strong>
+      <span>Support for a single upload.</span>
+      <em id="upload-filename" hidden></em>
+    </label>
+    <div class="upload-dialog-actions">
+      <button type="button" class="button secondary" id="upload-cancel">Close</button>
+      <button type="button" class="button primary" id="upload-ok">OK</button>
+    </div>
+
+    <form method="post" action="/brands/{{ brand }}/import" enctype="multipart/form-data" id="import-form" hidden>
+      <input type="hidden" name="month" value="{{ selected_month }}" />
+      <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
+      <input type="file" name="file" accept=".csv,.xlsx,.xls" />
+    </form>
+    <form method="post" action="/brands/{{ brand }}/catalog" enctype="multipart/form-data" class="import-row" id="catalog-upload" hidden>
+      <input type="hidden" name="month" value="{{ selected_month }}" />
+      <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
+      <input type="file" name="file" accept=".csv,.xlsx,.xls" />
+    </form>
+  </dialog>
 
   <div class="table-wrap">
     <table class="data-table">
@@ -232,9 +256,8 @@
 
 <div class="workspace-side">
 <section class="panel reward-thresholds" id="reward-thresholds">
-  <p class="section-eyebrow">3 · Cutoffs</p>
+  <p class="section-eyebrow">Cutoffs</p>
   <h2>Reward Thresholds</h2>
-  <p class="section-caption">Stores need this many points to earn each reward. Add or remove rewards and set the point cutoffs and dollar values. Saved for everyone.</p>
   <div class="rewards-grid">
     {% for name, pts, value_cents in rewards %}
     <div class="reward-card">
@@ -258,20 +281,27 @@
     <button form="sim-form" type="submit" name="action" value="add_reward" class="button secondary">Add Reward</button>
   </div>
 </section>
-
-<div class="actions">
-  <button form="sim-form" type="submit" name="action" value="simulate" class="button primary">Update Simulation</button>
-</div>
 </div>
 </div>
 
 <section class="panel budget-calculator" id="budget-calculator">
   <div class="section-header">
     <div>
-      <p class="section-eyebrow">4 · Budget</p>
+      <p class="section-eyebrow">Budget</p>
       <h2>Budget calculator</h2>
-      <p class="section-caption">Estimated program cost if every qualifying store is paid the reward’s dollar value for {{ period.period_label }}. Same simulation as the results above. Saved for everyone.</p>
+      <p class="section-caption">{{ scenario_meta.hint if scenario_meta else 'Estimated program cost' }} for {{ period.period_label }}.</p>
     </div>
+  </div>
+
+  <div class="scenario-grid" id="budget-scenarios">
+    {% for row in scenarios %}
+    <a class="scenario-card{% if row.key == scenario %} is-on{% endif %}"
+       href="/brands/{{ brand }}?month={{ selected_month }}{% if grain == 'quarter' %}&amp;grain=quarter{% endif %}&amp;scenario={{ row.key }}{% if search %}&amp;q={{ search }}{% endif %}">
+      <span class="metric-label">{{ row.label }}</span>
+      <strong>{{ row.total_label }}</strong>
+      <span class="metric-sub">{{ row.hint }}</span>
+    </a>
+    {% endfor %}
   </div>
 
   <div class="metrics budget-kpis">
@@ -292,7 +322,6 @@
   <div class="budget-board">
     <div class="budget-table-block">
       <h3>Reward cost</h3>
-      <p class="section-caption">Stores earning each reward × dollar value.</p>
       <div class="table-wrap">
         <table class="data-table">
           <thead>
@@ -329,7 +358,6 @@
 
     <div class="budget-table-block">
       <h3>SKU point totals</h3>
-      <p class="section-caption">Units ordered in this period × proposed points (current points if proposed is blank). Not dollars.</p>
       <div class="table-wrap">
         <table class="data-table">
           <thead>
