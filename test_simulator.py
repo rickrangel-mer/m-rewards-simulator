@@ -1,10 +1,20 @@
+from datetime import date
+
 import pandas as pd
 
 from simulator import (
+    budget_from_results,
     build_points_lookup,
+    dollars_to_cents,
+    format_usd,
     get_month_orders,
+    orders_for_period,
     parse_imported_points,
+    parse_grain,
+    period_copy,
+    period_months,
     simulate,
+    sku_point_totals,
     summarize_results,
 )
 
@@ -130,3 +140,82 @@ def test_summarize_results_detail_caps_at_500_metrics_use_full_population():
     assert summary["rewards"][0]["count"] == 501
     assert summary["rewards"][0]["pct"] == 100.0
     assert summary["stores"][0]["store_id"] == "S500"
+
+
+def test_parse_grain_defaults_to_month():
+    assert parse_grain(None) == "month"
+    assert parse_grain("") == "month"
+    assert parse_grain("MONTH") == "month"
+    assert parse_grain("quarter") == "quarter"
+    assert parse_grain("Quarter") == "quarter"
+
+
+def test_period_months_quarter_uses_complete_months_only():
+    today = date(2026, 9, 11)
+    assert period_months(2026, 7, "month", today=today) == [(2026, 7)]
+    assert period_months(2026, 7, "quarter", today=today) == [(2026, 7), (2026, 8)]
+    assert period_months(2026, 4, "quarter", today=today) == [(2026, 4), (2026, 5), (2026, 6)]
+
+
+def test_orders_for_period_quarter_combines_units_and_keeps_july_only_store():
+    raw = pd.DataFrame({
+        "store_id": ["S1", "S1", "S2"],
+        "sku": ["A", "A", "A"],
+        "order_date": pd.to_datetime(["2026-07-05", "2026-08-05", "2026-07-10"]),
+        "total_quantity": [2, 3, 4],
+    })
+    monthly = orders_for_period(raw, 2026, 7, {"A"}, grain="month")
+    quarterly = orders_for_period(
+        raw, 2026, 7, {"A"}, grain="quarter", today=date(2026, 9, 11)
+    )
+    assert set(monthly["store_id"]) == {"S1", "S2"}
+    assert set(quarterly["store_id"]) == {"S1", "S2"}
+    assert int(monthly.loc[monthly["store_id"] == "S1", "total_quantity"].iloc[0]) == 2
+    assert int(quarterly.loc[quarterly["store_id"] == "S1", "total_quantity"].iloc[0]) == 5
+    assert int(quarterly.loc[quarterly["store_id"] == "S2", "total_quantity"].iloc[0]) == 4
+
+
+def test_period_copy_quarter_incomplete_q3():
+    copy = period_copy("quarter", 2026, 7, [(2026, 7), (2026, 8)], today=date(2026, 9, 11))
+    assert copy["period_label"] == "Q3 2026"
+    assert "July–August" in copy["using_data"]
+    assert "September is not complete" in copy["using_data"]
+    assert copy["inclusion"] == "stores that ordered this brand this quarter"
+    assert copy["incomplete"] is True
+
+
+def test_budget_from_results_multiplies_earners_by_cents():
+    results = {
+        "rewards": [{"name": "Rebate", "count": 2, "threshold": 100, "pct": 100.0}],
+    }
+    budget = budget_from_results(results, [("Rebate", 100, 800)])
+    assert budget["total_cents"] == 1600
+    assert budget["total_label"] == "$16"
+    assert budget["reward_lines"][0]["count"] == 2
+    assert budget["reward_lines"][0]["value_label"] == "$8"
+
+
+def test_sku_point_totals_units_times_proposed():
+    orders = pd.DataFrame({
+        "store_id": ["S1", "S2"],
+        "sku": ["A", "A"],
+        "total_quantity": [5, 3],
+        "product_title": ["Prod A", "Prod A"],
+    })
+    skus = pd.DataFrame({
+        "sku": ["A"],
+        "product_title": ["Prod A"],
+        "current_points": [50],
+    })
+    totals = sku_point_totals(orders, skus, {"A": 100})
+    assert totals["total_units"] == 8
+    assert totals["total_points_issued"] == 800
+    assert totals["skus"][0]["points_per_unit"] == 100
+
+
+def test_dollars_to_cents_and_format():
+    assert dollars_to_cents("8") == 800
+    assert dollars_to_cents("8.50") == 850
+    assert dollars_to_cents("") == 0
+    assert format_usd(1600) == "$16"
+    assert format_usd(850) == "$8.50"

@@ -16,19 +16,21 @@
       {% if freshness %}
       <p class="freshness">Order data through {{ freshness }}</p>
       {% endif %}
-      <p class="page-month">{{ selected_month_label }}</p>
+      <p class="page-month">{{ period.period_label if period else selected_month_label }}</p>
     </div>
   </div>
   <ol class="flow-hint">
     <li>Review results</li>
     <li>Adjust SKU points</li>
     <li>Set reward cutoffs</li>
+    <li>Review budget</li>
   </ol>
 </section>
 {% endblock %}
 {% block content %}
 <form method="post" action="/brands/{{ brand }}/simulate" id="sim-form">
   <input type="hidden" name="month" value="{{ selected_month }}" />
+  <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
 </form>
 
 <section class="panel results" id="simulation-results">
@@ -36,7 +38,7 @@
     <div>
       <p class="section-eyebrow">1 · Outcome</p>
       <h2>Simulation Results</h2>
-      <p class="section-caption">This is the outcome for the selected month. Using {{ selected_month_label }} ordering data. Total Stores and % of stores are stores that ordered this brand this month.</p>
+      <p class="section-caption">This is the outcome for the selected {{ 'quarter' if grain == 'quarter' else 'month' }}. {{ period.using_data }}. Total Stores and % of stores are {{ period.inclusion }}.</p>
     </div>
     <div class="month-tools">
       {% if is_operator %}
@@ -49,6 +51,13 @@
       <input type="hidden" name="q" value="{{ search }}" />
       {% endif %}
       <label>
+        Period
+        <select name="grain" onchange="this.form.submit()">
+          <option value="month" {% if grain != 'quarter' %}selected{% endif %}>Month</option>
+          <option value="quarter" {% if grain == 'quarter' %}selected{% endif %}>Quarter</option>
+        </select>
+      </label>
+      <label>
         Simulation month
         <select name="month" onchange="this.form.submit()">
           {% for value, label in month_options %}
@@ -58,7 +67,7 @@
           {% endfor %}
         </select>
       </label>
-      <noscript><button type="submit" class="button secondary">Show month</button></noscript>
+      <noscript><button type="submit" class="button secondary">Show period</button></noscript>
     </form>
     </div>
   </div>
@@ -146,6 +155,7 @@
   <div class="data-toolbar">
   <form method="post" action="/brands/{{ brand }}/import" enctype="multipart/form-data" class="import-row">
     <input type="hidden" name="month" value="{{ selected_month }}" />
+    <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
     <label class="file-label">
       Import proposed points (CSV/Excel with sku + points)
       <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
@@ -156,6 +166,7 @@
 
   <form method="post" action="/brands/{{ brand }}/catalog" enctype="multipart/form-data" class="import-row" id="catalog-upload">
     <input type="hidden" name="month" value="{{ selected_month }}" />
+    <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
     <label class="file-label">
       Upload catalog (Excel/CSV with sku, product_title, current_points)
       <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
@@ -223,19 +234,27 @@
 <section class="panel reward-thresholds" id="reward-thresholds">
   <p class="section-eyebrow">3 · Cutoffs</p>
   <h2>Reward Thresholds</h2>
-  <p class="section-caption">Stores need this many points to earn each reward. Add or remove rewards and set the point cutoffs. Saved for everyone.</p>
+  <p class="section-caption">Stores need this many points to earn each reward. Add or remove rewards and set the point cutoffs and dollar values. Saved for everyone.</p>
   <div class="rewards-grid">
-    {% for name, pts in rewards %}
+    {% for name, pts, value_cents in rewards %}
     <div class="reward-card">
       <input form="sim-form" type="text" name="reward_name" value="{{ name }}" />
-      <input form="sim-form" type="number" name="reward_points" min="0" step="500" value="{{ pts }}" />
+      <label>
+        Points
+        <input form="sim-form" type="number" name="reward_points" min="0" step="500" value="{{ pts }}" />
+      </label>
+      <label>
+        Value ($)
+        <input form="sim-form" type="number" name="reward_value" min="0" step="0.01" value="{{ value_cents | dollar_input }}" />
+      </label>
       <button form="sim-form" type="submit" name="action" value="remove_reward_{{ loop.index0 }}" class="button danger">Remove</button>
     </div>
     {% endfor %}
   </div>
   <div class="add-reward">
     <input form="sim-form" type="text" name="new_reward_name" placeholder="New reward name" />
-    <input form="sim-form" type="number" name="new_reward_points" min="0" step="500" value="5000" />
+    <input form="sim-form" type="number" name="new_reward_points" min="0" step="500" value="5000" placeholder="Points" />
+    <input form="sim-form" type="number" name="new_reward_value" min="0" step="0.01" value="0" placeholder="Value ($)" />
     <button form="sim-form" type="submit" name="action" value="add_reward" class="button secondary">Add Reward</button>
   </div>
 </section>
@@ -245,4 +264,107 @@
 </div>
 </div>
 </div>
+
+<section class="panel budget-calculator" id="budget-calculator">
+  <div class="section-header">
+    <div>
+      <p class="section-eyebrow">4 · Budget</p>
+      <h2>Budget calculator</h2>
+      <p class="section-caption">Estimated program cost if every qualifying store is paid the reward’s dollar value for {{ period.period_label }}. Same simulation as the results above. Saved for everyone.</p>
+    </div>
+  </div>
+
+  <div class="metrics budget-kpis">
+    <div>
+      <span class="metric-label">Estimated cost</span>
+      <strong>{{ budget.total_label if budget else '$0' }}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Stores in period</span>
+      <strong>{{ "{:,}".format(results.total_stores) if results else 0 }}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Points issued</span>
+      <strong>{{ "{:,.0f}".format(sku_totals.total_points_issued) if sku_totals else 0 }}</strong>
+    </div>
+  </div>
+
+  <div class="budget-board">
+    <div class="budget-table-block">
+      <h3>Reward cost</h3>
+      <p class="section-caption">Stores earning each reward × dollar value.</p>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Reward</th>
+              <th class="num">Stores</th>
+              <th class="num">Value</th>
+              <th class="num">Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for line in budget.reward_lines %}
+            <tr>
+              <td>{{ line.name }}</td>
+              <td class="num">{{ "{:,}".format(line.count) }}</td>
+              <td class="num">{{ line.value_label }}</td>
+              <td class="num">{{ line.total_label }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">No rewards configured.</td></tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr>
+              <th>Total</th>
+              <th></th>
+              <th></th>
+              <th class="num">{{ budget.total_label if budget else '$0' }}</th>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <div class="budget-table-block">
+      <h3>SKU point totals</h3>
+      <p class="section-caption">Units ordered in this period × proposed points (current points if proposed is blank). Not dollars.</p>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Product</th>
+              <th class="num">Units</th>
+              <th class="num">Pts / unit</th>
+              <th class="num">Points issued</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in sku_totals.skus %}
+            <tr>
+              <td>{{ row.sku }}</td>
+              <td>{{ row.product_title }}</td>
+              <td class="num">{{ "{:,.0f}".format(row.units) }}</td>
+              <td class="num">{{ "{:,.0f}".format(row.points_per_unit) }}</td>
+              <td class="num">{{ "{:,.0f}".format(row.points_issued) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">No catalog units in this period.</td></tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr>
+              <th colspan="2">Total</th>
+              <th class="num">{{ "{:,.0f}".format(sku_totals.total_units) if sku_totals else 0 }}</th>
+              <th></th>
+              <th class="num">{{ "{:,.0f}".format(sku_totals.total_points_issued) if sku_totals else 0 }}</th>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
 {% endblock %}

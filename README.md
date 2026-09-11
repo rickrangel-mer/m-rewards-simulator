@@ -2,7 +2,7 @@
 
 FastAPI + Jinja2 web app that simulates M-Rewards outcomes from store order history. Brand SKU catalogs (which SKUs exist, titles, current points) live in **Railway Postgres**, seeded once from the git Excel workbooks. Order snapshots also live in Postgres, refreshed monthly from AWS Athena.
 
-The website reads Postgres. The monthly cron pulls Athena into `orders`. Operators can also **Pull order history** on a brand page to query Athena for that brand's SKUs only (last 6 complete months) without waiting for the 1st-of-month job.
+The website reads Postgres. The monthly cron pulls Athena into `orders`. Operators can also **Pull order history** on a brand page to query Athena for that brand's SKUs only, from **January 1 of the last complete month’s year** through that month, without waiting for the 1st-of-month job. After deploy, run **Pull order history** (or one `REFRESH_BACKFILL=1` cron) so existing Railway databases pick up Q1 months that a rolling 6-month window never stored.
 
 ## Data flow
 
@@ -11,7 +11,7 @@ The website reads Postgres. The monthly cron pulls Athena into `orders`. Operato
 3. Those rows replace that month in Postgres (`orders` table). Earlier months stay put.
 4. The website reads Postgres and shows a caption such as `Order data through August 2026`.
 
-First run (empty `refresh_state`) backfills the last 6 complete months. Set `REFRESH_BACKFILL=1` to force a full backfill.
+First run (empty `refresh_state`) backfills every complete calendar month from **January 1 of the last complete month’s year** through that month (on 11 Sep 2026 that is Jan–Aug 2026). Set `REFRESH_BACKFILL=1` to force that same span. Incremental cron runs after `refresh_state` is populated still pull **only the previous complete month**.
 
 ## Local development
 
@@ -79,7 +79,7 @@ Env vars (cron service only):
 | `AWS_SECRET_ACCESS_KEY` | Athena query |
 | `AWS_DEFAULT_REGION` | `us-west-2` |
 | `ATHENA_S3_STAGING` | `s3://mercaso-data-platform-prod/athena/sql/` |
-| `REFRESH_BACKFILL` | Set to `1` for a one-off 6-month backfill |
+| `REFRESH_BACKFILL` | Set to `1` for a one-off backfill from January 1 of the last complete month’s year through that month |
 | `SERVICE_ROLE` | Must be `refresh` |
 
 After the first successful deploy, trigger the cron service once (or run with `REFRESH_BACKFILL=1`) so Postgres is populated before anyone opens the app.

@@ -83,6 +83,10 @@
             Point cutoff
             <input type="number" name="reward_points" min="0" step="500" value="5000" required />
           </label>
+          <label>
+            Value ($)
+            <input type="number" name="reward_value" min="0" step="0.01" value="0" />
+          </label>
         </div>
       </fieldset>
       <button type="button" class="button secondary" id="new-brand-add-reward">Add another reward</button>
@@ -119,7 +123,8 @@
         if (!row) return;
         const clone = row.cloneNode(true);
         clone.querySelectorAll("input").forEach(function (el) {
-          if (el.type === "number") el.value = "5000";
+          if (el.name === "reward_points") el.value = "5000";
+          else if (el.name === "reward_value") el.value = "0";
           else el.value = "";
         });
         rewardsWrap.appendChild(clone);

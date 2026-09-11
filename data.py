@@ -11,6 +11,8 @@ import openpyxl
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 
+# Optional analysis (rewards_analysis.py) still averages over a fixed window.
+# Athena backfill is calendar-year based — see backfill_windows() — not this cap.
 NUM_MONTHS = 6
 DATA_DIR = Path(__file__).parent
 COCACOLA_EXCEL = DATA_DIR / "M-rewards-cocacola.xlsx"
@@ -47,10 +49,11 @@ CREATE TABLE IF NOT EXISTS brand_proposed_points (
 );
 
 CREATE TABLE IF NOT EXISTS brand_rewards (
-    brand      text        NOT NULL,
-    sort       int         NOT NULL,
-    name       text        NOT NULL,
-    points     int         NOT NULL,
+    brand       text        NOT NULL,
+    sort        int         NOT NULL,
+    name        text        NOT NULL,
+    points      int         NOT NULL,
+    value_cents int         NOT NULL DEFAULT 0,
     PRIMARY KEY (brand, sort)
 );
 
@@ -397,13 +400,21 @@ def previous_month_window(today: date) -> tuple[date, date]:
     return start, end
 
 
-def backfill_windows(today: date, num_months: int = NUM_MONTHS) -> list[tuple[date, date]]:
-    """Return [start, end) windows for the last `num_months` complete months, oldest first."""
+def backfill_windows(today: date, num_months: int | None = None) -> list[tuple[date, date]]:
+    """Complete months from January 1 of the last complete month's year through that month.
+
+    Oldest first, each window is [start, end). On 11 Sep 2026 this is Jan–Aug 2026.
+    On 15 Jan 2027 (last complete month Dec 2026) this is Jan–Dec 2026.
+
+    ``num_months`` is ignored; kept so older call sites still compile.
+    """
+    last_start, last_end = previous_month_window(today)
+    start = date(last_start.year, 1, 1)
     windows = []
-    for i in range(num_months, 0, -1):
-        start = today.replace(day=1) - relativedelta(months=i)
-        end = today.replace(day=1) - relativedelta(months=i - 1)
+    while start < last_end:
+        end = start + relativedelta(months=1)
         windows.append((start, end))
+        start = end
     return windows
 
 
@@ -817,6 +828,10 @@ def init_schema(conn) -> None:
     with conn.cursor() as cur:
         for statement in statements:
             cur.execute(statement)
+        cur.execute(
+            "ALTER TABLE brand_rewards "
+            "ADD COLUMN IF NOT EXISTS value_cents int NOT NULL DEFAULT 0"
+        )
     conn.commit()
 
 
@@ -921,36 +936,45 @@ def merge_proposed_points(brand: str, patch: dict[str, int], conn=None) -> dict[
             conn.close()
 
 
-def load_brand_rewards(brand: str, conn=None) -> list[tuple[str, int]]:
+def normalize_reward(item) -> tuple[str, int, int]:
+    """Coerce (name, points) or (name, points, value_cents) to a 3-tuple."""
+    name = str(item[0])
+    pts = int(item[1])
+    cents = int(item[2]) if len(item) > 2 else 0
+    return name, pts, cents
+
+
+def load_brand_rewards(brand: str, conn=None) -> list[tuple[str, int, int]]:
     conn, close = _borrow_connection(conn)
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT name, points FROM brand_rewards WHERE brand = %s ORDER BY sort",
+                "SELECT name, points, COALESCE(value_cents, 0) "
+                "FROM brand_rewards WHERE brand = %s ORDER BY sort",
                 (brand,),
             )
             rows = cur.fetchall()
-        return [(str(name), int(pts)) for name, pts in rows]
+        return [(str(name), int(pts), int(cents)) for name, pts, cents in rows]
     finally:
         if close:
             conn.close()
 
 
-def save_brand_rewards(brand: str, rewards: list[tuple[str, int]], conn=None, commit: bool = True) -> None:
+def save_brand_rewards(brand: str, rewards: list[tuple], conn=None, commit: bool = True) -> None:
     from psycopg2.extras import execute_values
 
     conn, close = _borrow_connection(conn)
     try:
         rows = [
-            (brand, idx, str(name), int(pts))
-            for idx, (name, pts) in enumerate(rewards)
+            (brand, idx, name, pts, cents)
+            for idx, (name, pts, cents) in enumerate(normalize_reward(r) for r in rewards)
         ]
         with conn.cursor() as cur:
             cur.execute("DELETE FROM brand_rewards WHERE brand = %s", (brand,))
             if rows:
                 execute_values(
                     cur,
-                    "INSERT INTO brand_rewards (brand, sort, name, points) VALUES %s",
+                    "INSERT INTO brand_rewards (brand, sort, name, points, value_cents) VALUES %s",
                     rows,
                     page_size=100,
                 )
@@ -1143,7 +1167,7 @@ def create_brand(
     label: str,
     theme: str,
     records: list[dict],
-    rewards: list[tuple[str, int]],
+    rewards: list[tuple],
     conn=None,
 ) -> dict:
     """Insert a registry row plus catalog and rewards in one transaction."""
