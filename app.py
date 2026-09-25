@@ -74,12 +74,17 @@ from simulator import (
     format_usd,
     normalize_reward,
     orders_for_period,
+    lift_quarter_choices,
+    lift_quarter_key,
     parse_grain,
     parse_imported_points,
+    parse_lift_pct,
+    parse_lift_quarter,
     parse_scenario,
     period_copy,
     period_months,
     reward_thresholds,
+    DEFAULT_LIFT_PCT,
     SCENARIO_ALL,
     simulate,
     sku_point_totals,
@@ -396,7 +401,7 @@ def empty_scenarios(rewards: list[tuple] | None = None) -> list[dict]:
         {"key": "all", "label": "Pay all rewards", "hint": "Every reward each store qualifies for", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
         {"key": "lowest", "label": "Lowest first", "hint": "Each store redeems the cheapest qualifying reward", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
         {"key": "highest", "label": "Highest first", "hint": "Each store redeems the most expensive qualifying reward", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
-        {"key": "q3_lift", "label": "30% lift from Q3", "hint": "Q3 units × 1.3, then pay all rewards", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
+        {"key": "lift", "label": "30% lift from Q3", "hint": "Q3 units × 1.3 (+30%), then pay all rewards", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
     ]
 
 
@@ -591,10 +596,14 @@ def run_brand_simulation(
     grain: str = "month",
     today: date | None = None,
     scenario: str = SCENARIO_ALL,
+    lift_pct: int = DEFAULT_LIFT_PCT,
+    lift_quarter: str | None = None,
 ):
     year, mon = parse_month(month_label)
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
+    lift_pct = parse_lift_pct(lift_pct)
+    lift_year, lift_q = parse_lift_quarter(lift_quarter, year)
     today = today or period_today()
     valid = set(skus_df["sku"].astype(str))
     points_lookup = build_points_lookup(skus_df, proposed)
@@ -618,6 +627,9 @@ def run_brand_simulation(
         sku_to_title,
         points_lookup,
         today=today,
+        lift_pct=lift_pct,
+        lift_year=lift_year,
+        lift_quarter=lift_q,
     )
     chosen = select_scenario(scenarios, scenario)
     return {
@@ -629,6 +641,8 @@ def run_brand_simulation(
         "scenario_meta": chosen,
         "period_months": months,
         "period": period_copy(grain, year, mon, months, today=today),
+        "lift_pct": lift_pct,
+        "lift_quarter": lift_quarter_key(lift_year, lift_q),
     }
 
 
@@ -647,9 +661,12 @@ def brand_page_context(
     bulk_value: int = 100,
     grain: str = "month",
     scenario: str = SCENARIO_ALL,
+    lift_pct: int = DEFAULT_LIFT_PCT,
+    lift_quarter: str | None = None,
 ):
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
+    lift_pct = parse_lift_pct(lift_pct)
     rows = apply_proposed_to_rows(skus_df, proposed)
     if search:
         needle = search.lower()
@@ -664,7 +681,15 @@ def brand_page_context(
 
     if selected_month:
         sim = run_brand_simulation(
-            raw, skus_df, selected_month, proposed, rewards, grain=grain, scenario=scenario
+            raw,
+            skus_df,
+            selected_month,
+            proposed,
+            rewards,
+            grain=grain,
+            scenario=scenario,
+            lift_pct=lift_pct,
+            lift_quarter=lift_quarter,
         )
         results = sim["results"]
         budget = sim["budget"]
@@ -673,7 +698,11 @@ def brand_page_context(
         scenarios = sim["scenarios"]
         scenario = sim["scenario"]
         scenario_meta = sim["scenario_meta"]
+        lift_pct = sim["lift_pct"]
+        lift_quarter = sim["lift_quarter"]
     else:
+        lift_year, lift_q = parse_lift_quarter(lift_quarter, period_today().year)
+        lift_quarter = lift_quarter_key(lift_year, lift_q)
         results = empty_results(rewards)
         scenarios = empty_scenarios(rewards)
         scenario_meta = select_scenario(scenarios, scenario)
@@ -702,6 +731,12 @@ def brand_page_context(
         ),
         "grain": grain,
         "quarter_options": available_quarters(months),
+        "lift_pct": lift_pct,
+        "lift_quarter": lift_quarter,
+        "lift_quarter_options": lift_quarter_choices(
+            months,
+            int(str(selected_month)[:4]) if selected_month else period_today().year,
+        ),
         "scenario": scenario,
         "scenarios": scenarios,
         "scenario_meta": scenario_meta,
@@ -728,6 +763,8 @@ def brand_page(
     q: str | None = None,
     grain: str | None = None,
     scenario: str | None = None,
+    lift: str | None = None,
+    lift_quarter: str | None = None,
 ):
     brand, denied = require_brand(request, brand)
     if denied:
@@ -735,6 +772,7 @@ def brand_page(
 
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
+    lift_pct = parse_lift_pct(lift)
     raw, state, error = load_orders_or_error()
     if error:
         return error_page(request, "Data unavailable", error, 503)
@@ -762,6 +800,8 @@ def brand_page(
         flash=flash,
         grain=grain,
         scenario=scenario,
+        lift_pct=lift_pct,
+        lift_quarter=lift_quarter,
     )
     ctx["open_new_brand"] = open_new_brand
     return TEMPLATES.TemplateResponse(request, "brand.html", ctx)
@@ -811,6 +851,8 @@ async def simulate_brand(
     action: str = Form("simulate"),
     grain: str = Form("month"),
     scenario: str = Form("all"),
+    lift: str = Form(""),
+    lift_quarter: str = Form(""),
 ):
     brand, denied = require_brand(request, brand)
     if denied:
@@ -818,6 +860,7 @@ async def simulate_brand(
 
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
+    lift_pct = parse_lift_pct(lift)
     form = await request.form()
     rewards = parse_reward_form(form)
     if not rewards:
@@ -835,7 +878,7 @@ async def simulate_brand(
             patch[str(sku)] = int(bulk_value)
         set_proposed(brand, patch)
         request.session["flash"] = f"Applied {bulk_value} points to {len(selected)} SKUs."
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario, lift_pct, lift_quarter)}", status_code=303)
 
     if action == "add_reward":
         new_name = (form.get("new_reward_name") or "").strip() or f"Reward {len(rewards) + 1}"
@@ -847,7 +890,7 @@ async def simulate_brand(
         rewards.append((new_name, new_pts, new_cents))
         set_rewards(brand, rewards)
         set_proposed(brand, patch)
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain, scenario=scenario)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain, scenario=scenario, lift_pct=lift_pct, lift_quarter=lift_quarter)}", status_code=303)
 
     if action.startswith("remove_reward_"):
         idx = int(action.split("_")[-1])
@@ -855,7 +898,7 @@ async def simulate_brand(
             rewards.pop(idx)
         set_rewards(brand, rewards)
         set_proposed(brand, patch)
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain, scenario=scenario)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain, scenario=scenario, lift_pct=lift_pct, lift_quarter=lift_quarter)}", status_code=303)
 
     proposed = set_proposed(brand, patch)
 
@@ -885,6 +928,8 @@ async def simulate_brand(
             bulk_value=bulk_value,
             grain=grain,
             scenario=scenario,
+            lift_pct=lift_pct,
+            lift_quarter=lift_quarter,
         ),
     )
 
@@ -955,12 +1000,25 @@ def export_skus(request: Request, brand: str):
     )
 
 
-def _month_query(month: str, q: str = "", grain: str = "month", scenario: str = "all") -> str:
+def _month_query(
+    month: str,
+    q: str = "",
+    grain: str = "month",
+    scenario: str = "all",
+    lift_pct: int = DEFAULT_LIFT_PCT,
+    lift_quarter: str = "",
+) -> str:
     qs = f"?month={month}"
     if parse_grain(grain) == "quarter":
         qs += "&grain=quarter"
     if parse_scenario(scenario) != SCENARIO_ALL:
         qs += f"&scenario={parse_scenario(scenario)}"
+    pct = parse_lift_pct(lift_pct)
+    if pct != DEFAULT_LIFT_PCT:
+        qs += f"&lift={pct}"
+    quarter = (lift_quarter or "").strip()
+    if quarter and not quarter.upper().endswith("-Q3"):
+        qs += f"&lift_quarter={quarter}"
     if q:
         qs += f"&q={q}"
     return qs

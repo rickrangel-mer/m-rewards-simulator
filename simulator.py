@@ -233,14 +233,84 @@ def format_usd(cents) -> str:
 SCENARIO_ALL = "all"
 SCENARIO_LOWEST = "lowest"
 SCENARIO_HIGHEST = "highest"
+SCENARIO_LIFT = "lift"
+# Older links used a locked +30% Q3 scenario.
 SCENARIO_Q3_LIFT = "q3_lift"
-SCENARIOS = (SCENARIO_ALL, SCENARIO_LOWEST, SCENARIO_HIGHEST, SCENARIO_Q3_LIFT)
-Q3_LIFT_FACTOR = 1.3
+SCENARIOS = (SCENARIO_ALL, SCENARIO_LOWEST, SCENARIO_HIGHEST, SCENARIO_LIFT)
+DEFAULT_LIFT_PCT = 30
+DEFAULT_LIFT_QUARTER = 3
 
 
 def parse_scenario(value: str | None) -> str:
     key = (value or SCENARIO_ALL).strip().lower()
+    if key in (SCENARIO_LIFT, SCENARIO_Q3_LIFT):
+        return SCENARIO_LIFT
     return key if key in SCENARIOS else SCENARIO_ALL
+
+
+def parse_lift_pct(value, default: int = DEFAULT_LIFT_PCT) -> int:
+    """Integer percent. Positive is growth, negative is a decline. Clamped to [-100, 500]."""
+    if value is None or str(value).strip() == "":
+        return default
+    text = str(value).strip().rstrip("%")
+    try:
+        pct = int(round(float(text)))
+    except (TypeError, ValueError):
+        return default
+    return max(-100, min(500, pct))
+
+
+def lift_factor(pct: int) -> float:
+    return 1 + int(pct) / 100
+
+
+def parse_lift_quarter(value, fallback_year: int, fallback_quarter: int = DEFAULT_LIFT_QUARTER) -> tuple[int, int]:
+    """Accept 2026-Q3, Q3-2026, or 2026-3. Otherwise the fallback quarter."""
+    text = str(value or "").strip().upper().replace(" ", "")
+    year = quarter = None
+    if len(text) >= 6 and text[0].isdigit() and "-Q" in text:
+        left, right = text.split("-Q", 1)
+        if left.isdigit() and right in "1234":
+            year, quarter = int(left), int(right)
+    elif text.startswith("Q") and "-" in text:
+        left, right = text[1:].split("-", 1)
+        if left in "1234" and right.isdigit():
+            quarter, year = int(left), int(right)
+    elif "-" in text:
+        left, right = text.split("-", 1)
+        if left.isdigit() and right in "1234":
+            year, quarter = int(left), int(right)
+    if year is None or quarter is None:
+        return int(fallback_year), int(fallback_quarter)
+    return year, quarter
+
+
+def lift_quarter_key(year: int, quarter: int) -> str:
+    return f"{int(year)}-Q{int(quarter)}"
+
+
+def lift_quarter_choices(months: list[str] | None, selected_year: int | None) -> list[dict]:
+    """Every calendar quarter in years that have orders, plus the selected year."""
+    years = {row["year"] for row in available_quarters(months or [])}
+    if selected_year:
+        years.add(int(selected_year))
+    choices = []
+    for year in sorted(years):
+        for quarter in (1, 2, 3, 4):
+            choices.append({
+                "value": lift_quarter_key(year, quarter),
+                "label": f"Q{quarter} {year}",
+                "year": year,
+                "quarter": quarter,
+            })
+    return choices
+
+
+def lift_copy(pct: int, year: int, quarter: int) -> tuple[str, str]:
+    factor = lift_factor(pct)
+    label = f"{pct}% lift from Q{quarter} {year}"
+    hint = f"Q{quarter} {year} units × {factor:g} ({pct:+d}%), then pay all rewards"
+    return label, hint
 
 
 def available_quarters(months: list[str]) -> list[dict]:
@@ -323,7 +393,7 @@ def redeem_counts(store_points: pd.DataFrame, rewards, mode: str = SCENARIO_ALL)
     return counts
 
 
-def lift_orders(period_orders: pd.DataFrame, factor: float = Q3_LIFT_FACTOR) -> pd.DataFrame:
+def lift_orders(period_orders: pd.DataFrame, factor: float = 1.3) -> pd.DataFrame:
     if period_orders is None or period_orders.empty:
         return period_orders if period_orders is not None else pd.DataFrame(
             columns=["store_id", "sku", "total_quantity"]
@@ -401,24 +471,31 @@ def build_budget_scenarios(
     sku_to_title: dict,
     points_lookup: dict,
     today: date | None = None,
-    factor: float = Q3_LIFT_FACTOR,
+    lift_pct: int = DEFAULT_LIFT_PCT,
+    lift_year: int | None = None,
+    lift_quarter: int = DEFAULT_LIFT_QUARTER,
 ) -> list[dict]:
-    """Pay-all, exclusive redeem, and 30% lift from Q3 of `year`."""
+    """Pay-all, exclusive redeem, and a volume lift on a chosen quarter."""
     proposed = proposed or {}
     thresholds = reward_thresholds(rewards)
     base_sku = sku_point_totals(period_orders, skus_df, proposed)
-    q3_orders = orders_for_period(raw, int(year), 7, skus, grain="quarter", today=today)
-    lifted = lift_orders(q3_orders, factor)
+    lift_pct = parse_lift_pct(lift_pct)
+    lift_year = int(year if lift_year is None else lift_year)
+    lift_quarter = int(lift_quarter)
+    anchor_month = (lift_quarter - 1) * 3 + 1
+    base_orders = orders_for_period(raw, lift_year, anchor_month, skus, grain="quarter", today=today)
+    factor = lift_factor(lift_pct)
+    lifted = lift_orders(base_orders, factor)
     lifted_points = simulate(lifted, sku_to_title, points_lookup, thresholds)
-    pct = int(round((factor - 1) * 100))
+    label, hint = lift_copy(lift_pct, lift_year, lift_quarter)
     specs = [
         (SCENARIO_ALL, "Pay all rewards", "Every reward each store qualifies for", redeem_counts(store_points, rewards, SCENARIO_ALL), base_sku),
         (SCENARIO_LOWEST, "Lowest first", "Each store redeems the cheapest qualifying reward", redeem_counts(store_points, rewards, SCENARIO_LOWEST), base_sku),
         (SCENARIO_HIGHEST, "Highest first", "Each store redeems the most expensive qualifying reward", redeem_counts(store_points, rewards, SCENARIO_HIGHEST), base_sku),
         (
-            SCENARIO_Q3_LIFT,
-            f"{pct}% lift from Q3 {year}",
-            f"Q3 {year} units × {factor:g}, then pay all rewards",
+            SCENARIO_LIFT,
+            label,
+            hint,
             redeem_counts(lifted_points, rewards, SCENARIO_ALL),
             sku_point_totals(lifted, skus_df, proposed),
         ),

@@ -1309,6 +1309,20 @@ body[data-theme="ferrera"] .brand-nav a.active {
   font-variant-numeric: tabular-nums;
 }
 
+.lift-form {
+  gap: 0.45rem;
+}
+
+.lift-form input[type="number"],
+.lift-form select {
+  min-width: 0;
+  width: 100%;
+}
+
+.lift-form .button {
+  align-self: flex-start;
+}
+
 .upload-dialog {
   border: 0;
   border-radius: 18px;
