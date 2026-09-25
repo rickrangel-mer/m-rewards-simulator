@@ -26,6 +26,8 @@
   <input type="hidden" name="month" value="{{ selected_month }}" />
   <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
   <input type="hidden" name="scenario" value="{{ scenario or 'all' }}" />
+  <input type="hidden" name="lift" value="{{ lift_pct }}" />
+  <input type="hidden" name="lift_quarter" value="{{ lift_quarter }}" />
 </form>
 
 <section class="panel results" id="simulation-results">
@@ -48,13 +50,15 @@
         {% if scenario and scenario != 'all' %}
         <input type="hidden" name="scenario" value="{{ scenario }}" />
         {% endif %}
+        <input type="hidden" name="lift" value="{{ lift_pct }}" />
+        <input type="hidden" name="lift_quarter" value="{{ lift_quarter }}" />
         <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
         <div class="seg" role="group" aria-label="Period">
           <a class="seg-btn{% if grain != 'quarter' %} is-on{% endif %}"
-             href="/brands/{{ brand }}?month={{ selected_month }}{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}{% if search %}&amp;q={{ search }}{% endif %}">Month</a>
+             href="/brands/{{ brand }}?month={{ selected_month }}{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search }}{% endif %}">Month</a>
           {% for qopt in quarter_options %}
           <a class="seg-btn{% if grain == 'quarter' and period.period_label == qopt.label %} is-on{% endif %}"
-             href="/brands/{{ brand }}?month={{ qopt.month }}&amp;grain=quarter{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}{% if search %}&amp;q={{ search }}{% endif %}">{{ qopt.label }}</a>
+             href="/brands/{{ brand }}?month={{ qopt.month }}&amp;grain=quarter{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search }}{% endif %}">{{ qopt.label }}</a>
           {% endfor %}
         </div>
         <label class="month-select">
@@ -294,13 +298,43 @@
   </div>
 
   <div class="scenario-grid" id="budget-scenarios">
-    {% for row in scenarios %}
+    {% for row in scenarios if row.key != 'lift' %}
     <a class="scenario-card{% if row.key == scenario %} is-on{% endif %}"
-       href="/brands/{{ brand }}?month={{ selected_month }}{% if grain == 'quarter' %}&amp;grain=quarter{% endif %}&amp;scenario={{ row.key }}{% if search %}&amp;q={{ search }}{% endif %}">
+       href="/brands/{{ brand }}?month={{ selected_month }}{% if grain == 'quarter' %}&amp;grain=quarter{% endif %}&amp;scenario={{ row.key }}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search }}{% endif %}">
       <span class="metric-label">{{ row.label }}</span>
       <strong>{{ row.total_label }}</strong>
       <span class="metric-sub">{{ row.hint }}</span>
     </a>
+    {% endfor %}
+    {% for row in scenarios if row.key == 'lift' %}
+    <form method="get" action="/brands/{{ brand }}" class="scenario-card lift-form{% if scenario == 'lift' %} is-on{% endif %}" id="lift-scenario">
+      <input type="hidden" name="month" value="{{ selected_month }}" />
+      {% if grain == 'quarter' %}
+      <input type="hidden" name="grain" value="quarter" />
+      {% endif %}
+      {% if search %}
+      <input type="hidden" name="q" value="{{ search }}" />
+      {% endif %}
+      <input type="hidden" name="scenario" value="lift" />
+      <span class="metric-label">{{ row.label }}</span>
+      <strong>{{ row.total_label }}</strong>
+      <label>
+        Lift %
+        <input type="number" name="lift" step="5" value="{{ lift_pct }}" aria-label="Lift percent" />
+      </label>
+      <label>
+        Quarter
+        <select name="lift_quarter" aria-label="Lift quarter" onchange="this.form.submit()">
+          {% for opt in lift_quarter_options %}
+          <option value="{{ opt.value }}" {% if opt.value == lift_quarter %}selected{% endif %}>{{ opt.label }}</option>
+          {% else %}
+          <option value="{{ lift_quarter }}" selected>{{ lift_quarter }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="button secondary">Apply lift</button>
+      <span class="metric-sub">{{ row.hint }}</span>
+    </form>
     {% endfor %}
   </div>
 

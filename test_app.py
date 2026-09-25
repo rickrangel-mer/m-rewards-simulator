@@ -1722,6 +1722,8 @@ def test_budget_scenarios_exclusive_redeem_and_q3_lift(persist_store):
         lowest = client.get("/brands/coca-cola?month=2026-07&grain=quarter&scenario=lowest")
         highest = client.get("/brands/coca-cola?month=2026-07&grain=quarter&scenario=highest")
         lifted = client.get("/brands/coca-cola?month=2026-07&scenario=q3_lift")
+        negative = client.get("/brands/coca-cola?month=2026-07&scenario=lift&lift=-50&lift_quarter=2026-Q3")
+        other_quarter = client.get("/brands/coca-cola?month=2026-07&scenario=lift&lift=30&lift_quarter=2026-Q1")
 
     # Q3: S1=400 pts, S2=500 pts. Both earn Low ($8). Only S1/S2 both earn High ($20) too.
     # Pay all: 2*$8 + 2*$20 = $56. Lowest: 2*$8 = $16. Highest: 2*$20 = $40.
@@ -1735,3 +1737,17 @@ def test_budget_scenarios_exclusive_redeem_and_q3_lift(persist_store):
     # Lifted units 18*1.3=23.4; points still both clear 400. Cost stays stacked $56,
     # but SKU points issued become 18*50*1.3 = 1170.
     assert "1,170" in _html_between(lifted.text, "budget-calculator") or "1170" in _html_between(lifted.text, "budget-calculator")
+    assert 'name="lift"' in lifted.text
+    assert 'name="lift_quarter"' in lifted.text
+    assert "Q1 2026" in lifted.text
+
+    neg_budget = _html_between(negative.text, "budget-calculator")
+    q1_budget = _html_between(other_quarter.text, "budget-calculator")
+    assert "-50% lift from Q3 2026" in neg_budget
+    assert 'value="-50"' in neg_budget
+    # -50% of Q3 units (18 × 0.5 × 50 pts) issues 450 points. Both stores miss the $20 reward.
+    assert "450" in neg_budget
+    assert ">High</td>" in neg_budget
+    assert "30% lift from Q1 2026" in q1_budget
+    assert 'value="2026-Q1" selected' in q1_budget
+    assert "No catalog units in this period." in q1_budget

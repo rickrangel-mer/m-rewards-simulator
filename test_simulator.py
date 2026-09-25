@@ -236,6 +236,21 @@ def test_redeem_counts_exclusive_lowest_and_highest():
     assert redeem_counts(store_points, rewards, "highest") == {"Low": 1, "High": 1}
 
 
+def test_parse_lift_pct_allows_decline_and_growth():
+    from simulator import lift_factor, parse_lift_pct, parse_lift_quarter
+
+    assert parse_lift_pct(None) == 30
+    assert parse_lift_pct("30") == 30
+    assert parse_lift_pct("-20") == -20
+    assert parse_lift_pct("-100") == -100
+    assert parse_lift_pct("-250") == -100
+    assert lift_factor(30) == 1.3
+    assert lift_factor(-50) == 0.5
+    assert parse_lift_quarter("2026-Q1", 2026) == (2026, 1)
+    assert parse_lift_quarter("Q2-2025", 2026) == (2025, 2)
+    assert parse_lift_quarter("", 2026) == (2026, 3)
+
+
 def test_available_quarters_from_months():
     from simulator import available_quarters
 
