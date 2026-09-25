@@ -147,14 +147,32 @@
   }
 
   var currentSlug = brandSlug(location.pathname);
+  var scrollLock = null;
+
+  window.addEventListener("scroll", function () {
+    if (scrollLock == null) return;
+    if (Math.abs(window.scrollY - scrollLock) > 2) window.scrollTo(0, scrollLock);
+  }, { passive: true });
 
   function pinScroll(y) {
-    function apply() { window.scrollTo(0, y); }
-    apply();
-    requestAnimationFrame(function () {
-      apply();
-      requestAnimationFrame(apply);
-    });
+    scrollLock = y;
+    window.scrollTo(0, y);
+    var frames = 0;
+    (function tick() {
+      if (scrollLock !== y) return;
+      if (Math.abs(window.scrollY - y) > 2) window.scrollTo(0, y);
+      frames += 1;
+      if (frames < 24) requestAnimationFrame(tick);
+      else scrollLock = null;
+    })();
+  }
+
+  function parkFocus() {
+    var node = document.activeElement;
+    if (!node || node === document.body) return;
+    document.body.tabIndex = -1;
+    try { document.body.focus({ preventScroll: true }); }
+    catch (err) { node.blur(); }
   }
 
   function swapPage(url, push, options) {
@@ -162,6 +180,7 @@
     if (inflight) inflight.abort();
     var controller = new AbortController();
     inflight = controller;
+    var anchorY = window.scrollY;
     var target = new URL(url, location.origin);
     var keepScroll = target.origin === location.origin && brandSlug(target.pathname) === currentSlug;
     document.body.classList.add("is-updating");
@@ -179,11 +198,8 @@
     }).then(function (result) {
       if (inflight !== controller) return;
       var doc = new DOMParser().parseFromString(result.html, "text/html");
-      var leavingY = window.scrollY;
-      var y = typeof options.scrollTo === "number" ? options.scrollTo : (keepScroll ? leavingY : 0);
-      if (document.activeElement && document.activeElement !== document.body && document.activeElement.blur) {
-        document.activeElement.blur();
-      }
+      var y = typeof options.scrollTo === "number" ? options.scrollTo : (keepScroll ? anchorY : 0);
+      parkFocus();
       if (!result.response.ok) {
         if (options.method && options.method !== "GET" && applyPage(doc, location.href)) {
           pinScroll(0);
@@ -200,7 +216,8 @@
       }
       currentSlug = brandSlug(parsed.pathname);
       if (push) {
-        history.replaceState({ mrewards: 1, y: leavingY }, "");
+        if (history.scrollRestoration) history.scrollRestoration = "manual";
+        history.replaceState({ mrewards: 1, y: anchorY }, "");
         history.pushState({ mrewards: 1, y: y }, "", finalUrl);
       }
       pinScroll(y);
