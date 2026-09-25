@@ -115,6 +115,22 @@ body {
   background: var(--bg);
   min-height: 100vh;
   line-height: 1.45;
+  overflow-anchor: none;
+}
+
+body.is-updating {
+  cursor: progress;
+}
+
+body.is-updating::after {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--accent);
+  z-index: 40;
 }
 
 a { color: var(--accent); text-decoration: none; }

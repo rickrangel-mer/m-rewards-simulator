@@ -63,7 +63,7 @@
         </div>
         <label class="month-select">
           Simulation month
-          <select name="month" onchange="this.form.submit()">
+          <select name="month" onchange="if (this.form.requestSubmit) this.form.requestSubmit(); else this.form.submit();">
             {% for value, label in month_options %}
             <option value="{{ value }}" {% if value == selected_month %}selected{% endif %}>{{ label }}</option>
             {% else %}
@@ -324,7 +324,7 @@
       </label>
       <label>
         Quarter
-        <select name="lift_quarter" aria-label="Lift quarter" onchange="this.form.submit()">
+        <select name="lift_quarter" aria-label="Lift quarter" onchange="if (this.form.requestSubmit) this.form.requestSubmit(); else this.form.submit();">
           {% for opt in lift_quarter_options %}
           <option value="{{ opt.value }}" {% if opt.value == lift_quarter %}selected{% endif %}>{{ opt.label }}</option>
           {% else %}
