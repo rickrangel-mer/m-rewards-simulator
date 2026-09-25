@@ -66,5 +66,10 @@
     });
   }
 
-  document.querySelectorAll("table").forEach(enhance);
+  function enhanceTables() {
+    document.querySelectorAll("table:not(.js-sortable)").forEach(enhance);
+  }
+
+  window.enhanceTables = enhanceTables;
+  enhanceTables();
 })();

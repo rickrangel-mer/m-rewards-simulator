@@ -1016,6 +1016,32 @@ def test_table_sort_script_is_served():
     js = client.get("/static/tables.js").text
     assert "sortTable" in js
     assert "aria-sort" in js
+    assert "enhanceTables" in js
+
+
+def test_brand_clicks_update_in_place_without_reloading():
+    """Period, scenario, and simulate controls fetch the next HTML instead of reloading."""
+    client = TestClient(webapp.app)
+    js = client.get("/static/ui.js").text
+    assert "DOMParser" in js
+    assert "pushState" in js
+    assert "scrollY" in js
+    assert "sim-form" in js
+    assert "month-form" in js
+    assert "lift-scenario" in js
+    assert "brand-refresh-form" in js
+    assert 'parts.length !== 2' in js
+    assert 'getAttribute("action")' in js
+    css = client.get("/static/styles.css").text
+    assert "overflow-anchor: none" in css
+
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        html = client.get("/brands/coca-cola").text
+    assert "requestSubmit" in html
+    assert 'id="month-form"' in html
+    assert 'id="lift-scenario"' in html
+    assert 'id="sim-form"' in html
 
 
 def test_brand_mark_url_uses_attached_file(tmp_path, monkeypatch):
