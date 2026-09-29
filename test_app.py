@@ -652,6 +652,26 @@ def test_proposed_points_above_former_5000_cap_round_trip(persist_store):
     assert b'value="8000"' in page.content
 
 
+def test_point_inputs_accept_any_whole_number():
+    """step=50 made the shared form invalid for values like 20 or 60.
+
+    The browser then refused to submit, so typed proposed points and
+    Apply to selected never reached the server.
+    """
+    orders_patch, skus_patch = _mocked_client(skus=_two_skus())
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        html = client.get("/brands/coca-cola").text
+    sku = _html_between(html, "sku-points", "reward-thresholds")
+    rewards = _html_between(html, "reward-thresholds", "budget-calculator")
+    assert 'name="proposed_points" min="0" step="1"' in sku
+    assert 'name="bulk_value" min="0" step="1"' in sku
+    assert 'step="50"' not in sku
+    assert 'name="reward_points" min="0" step="1"' in rewards
+    assert 'name="new_reward_points" min="0" step="1"' in rewards
+    assert 'step="500"' not in rewards
+
+
 def test_search_filtered_post_does_not_wipe_other_skus(persist_store):
     persist_store.proposed["coca-cola"] = {"SKU-A": 100, "SKU-B": 200}
     orders_patch, skus_patch = _mocked_client(skus=_two_skus())

@@ -168,7 +168,7 @@
     </label>
     <label>
       Bulk point value
-      <input form="sim-form" type="number" name="bulk_value" min="0" step="50" value="{{ bulk_value or 100 }}" />
+      <input form="sim-form" type="number" name="bulk_value" min="0" step="1" value="{{ bulk_value or 100 }}" />
     </label>
     <button form="sim-form" type="submit" name="action" value="bulk_apply" class="button secondary">Apply to selected</button>
   </div>
@@ -246,7 +246,7 @@
           <td class="num">{{ row.store_penetration }}</td>
           <td class="num">{{ row.current_points }}</td>
           <td>
-            <input form="sim-form" type="number" name="proposed_points" min="0" step="50"
+            <input form="sim-form" type="number" name="proposed_points" min="0" step="1"
                    value="{{ row.proposed_points }}" />
           </td>
         </tr>
@@ -268,7 +268,7 @@
       <input form="sim-form" type="text" name="reward_name" value="{{ name }}" />
       <label>
         Points
-        <input form="sim-form" type="number" name="reward_points" min="0" step="500" value="{{ pts }}" />
+        <input form="sim-form" type="number" name="reward_points" min="0" step="1" value="{{ pts }}" />
       </label>
       <label>
         Value ($)
@@ -280,7 +280,7 @@
   </div>
   <div class="add-reward">
     <input form="sim-form" type="text" name="new_reward_name" placeholder="New reward name" />
-    <input form="sim-form" type="number" name="new_reward_points" min="0" step="500" value="5000" placeholder="Points" />
+    <input form="sim-form" type="number" name="new_reward_points" min="0" step="1" value="5000" placeholder="Points" />
     <input form="sim-form" type="number" name="new_reward_value" min="0" step="0.01" value="0" placeholder="Value ($)" />
     <button form="sim-form" type="submit" name="action" value="add_reward" class="button secondary">Add Reward</button>
   </div>
