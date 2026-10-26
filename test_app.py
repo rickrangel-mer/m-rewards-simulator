@@ -1686,9 +1686,14 @@ def test_budget_sku_point_totals_match_units_times_proposed(persist_store):
     assert "SKU-A" in budget
     assert "Estimated cost" not in budget
     assert "Average points per dollar" in budget
+    assert "Dollars per point" in budget
+    assert "data-rate-choice=\"dollars\"" in budget
+    assert "$16 / 800" in budget
+    assert "$0.02" in budget
     assert "July 2026" in budget
     assert "Q3 2026" in budget
     assert "Pts / $" in budget
+    assert "$ / pt" in budget
     all_card = budget[budget.index('data-scenario="all"'):budget.index('data-scenario="lowest"')]
     assert "<strong>" not in all_card
 
@@ -1793,8 +1798,14 @@ def test_budget_scenarios_exclusive_redeem_and_q3_lift(persist_store):
     assert "$40" in _html_between(highest.text, "budget-calculator")
     assert "Highest first" in highest.text
     assert "30% lift from Q3 2026" in lifted.text
-    # Lifted units 18*1.3=23.4; points still both clear 400. Cost stays stacked $56,
-    # but SKU points issued become 18*50*1.3 = 1170.
+    # Lifted units 18*1.3=23.4; both stores still clear High, but the lift pays
+    # lowest first: 2 × $8 = $16. SKU points issued are 18*50*1.3 = 1,170.
+    lift_start = lifted.text.index('id="lift-scenario"')
+    lift_card = lifted.text[lift_start:lifted.text.index("</form>", lift_start)]
+    assert "then lowest first" in lift_card
+    assert "then pay all rewards" not in lifted.text
+    assert "$16" in lift_card
+    assert "$56" not in lift_card
     assert "1,170" in _html_between(lifted.text, "budget-calculator") or "1170" in _html_between(lifted.text, "budget-calculator")
     assert 'name="lift"' in lifted.text
     assert 'name="lift_quarter"' in lifted.text

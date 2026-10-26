@@ -403,7 +403,7 @@ def empty_scenarios(rewards: list[tuple] | None = None) -> list[dict]:
         {"key": "all", "label": "Pay all rewards", "hint": "Every reward each store qualifies for", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
         {"key": "lowest", "label": "Lowest first", "hint": "Each store redeems the cheapest qualifying reward", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
         {"key": "highest", "label": "Highest first", "hint": "Each store redeems the most expensive qualifying reward", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
-        {"key": "lift", "label": "30% lift from Q3", "hint": "Q3 units × 1.3 (+30%), then pay all rewards", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
+        {"key": "lift", "label": "30% lift from Q3", "hint": "Q3 units × 1.3 (+30%), then lowest first", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
     ]
 
 

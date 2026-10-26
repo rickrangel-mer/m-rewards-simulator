@@ -309,7 +309,7 @@ def lift_quarter_choices(months: list[str] | None, selected_year: int | None) ->
 def lift_copy(pct: int, year: int, quarter: int) -> tuple[str, str]:
     factor = lift_factor(pct)
     label = f"{pct}% lift from Q{quarter} {year}"
-    hint = f"Q{quarter} {year} units × {factor:g} ({pct:+d}%), then pay all rewards"
+    hint = f"Q{quarter} {year} units × {factor:g} ({pct:+d}%), then lowest first"
     return label, hint
 
 
@@ -453,24 +453,58 @@ def format_points_per_dollar(ratio: float) -> str:
     return f"{ratio:,.1f}"
 
 
+def format_dollars_per_point(dollars: float) -> str:
+    """Small rates keep a third decimal so $33 / 500 stays $0.066."""
+    dollars = float(dollars or 0)
+    if dollars >= 1:
+        if abs(dollars - round(dollars)) < 0.005:
+            return f"${dollars:,.0f}"
+        return f"${dollars:,.2f}"
+    text = f"{round(dollars, 3):.3f}".rstrip("0").rstrip(".")
+    if "." not in text:
+        text += ".00"
+    elif len(text.split(".")[1]) == 1:
+        text += "0"
+    return f"${text}"
+
+
 def points_per_dollar(points: float, cost_cents: int) -> dict:
-    """Points divided by reward dollars. 500 points and $33 is about 15.2."""
+    """Points ÷ reward dollars, and the inverse dollars ÷ points.
+
+    500 points and $33 is about 15.2 points per dollar, or $0.066 per point.
+    """
     points = float(points or 0)
     cents = int(cost_cents or 0)
+    empty = {
+        "ratio": None,
+        "ratio_label": "—",
+        "formula": "",
+        "dollar_ratio": None,
+        "dollar_ratio_label": "—",
+        "dollar_formula": "",
+        "cost_label": format_usd(0),
+    }
     if cents <= 0:
-        return {
-            "ratio": None,
-            "ratio_label": "—",
-            "formula": "",
-            "cost_label": format_usd(0),
-        }
-    ratio = points / (cents / 100)
-    return {
+        return empty
+    cost_label = format_usd(cents)
+    dollars = cents / 100
+    ratio = points / dollars
+    result = {
         "ratio": ratio,
         "ratio_label": format_points_per_dollar(ratio),
-        "formula": f"{format_points_count(points)} / {format_usd(cents)}",
-        "cost_label": format_usd(cents),
+        "formula": f"{format_points_count(points)} / {cost_label}",
+        "dollar_ratio": None,
+        "dollar_ratio_label": "—",
+        "dollar_formula": "",
+        "cost_label": cost_label,
     }
+    if points <= 0:
+        return result
+    per_point = dollars / points
+    result["dollar_ratio"] = per_point
+    result["dollar_ratio_label"] = format_dollars_per_point(per_point)
+    result["dollar_formula"] = f"{cost_label} / {format_points_count(points)}"
+    return result
 
 
 def annotate_points_per_dollar(sku_totals: dict, cost_cents: int) -> dict:
@@ -546,7 +580,7 @@ def build_budget_scenarios(
     lift_year: int | None = None,
     lift_quarter: int = DEFAULT_LIFT_QUARTER,
 ) -> list[dict]:
-    """Pay-all, exclusive redeem, and a volume lift on a chosen quarter."""
+    """Pay-all, exclusive redeem, and a volume lift scored as lowest first."""
     proposed = proposed or {}
     thresholds = reward_thresholds(rewards)
     base_sku = sku_point_totals(period_orders, skus_df, proposed)
@@ -567,7 +601,7 @@ def build_budget_scenarios(
             SCENARIO_LIFT,
             label,
             hint,
-            redeem_counts(lifted_points, rewards, SCENARIO_ALL),
+            redeem_counts(lifted_points, rewards, SCENARIO_LOWEST),
             sku_point_totals(lifted, skus_df, proposed),
         ),
     ]

@@ -219,10 +219,15 @@ def test_points_per_dollar_shows_points_over_cost():
     example = points_per_dollar(500, 3300)
     assert example["formula"] == "500 / $33"
     assert example["ratio_label"] == "15.2"
+    assert example["dollar_formula"] == "$33 / 500"
+    assert example["dollar_ratio_label"] == "$0.066"
     assert points_per_dollar(800, 1600)["ratio_label"] == "50"
     assert points_per_dollar(800, 1600)["formula"] == "800 / $16"
+    assert points_per_dollar(800, 1600)["dollar_ratio_label"] == "$0.02"
+    assert points_per_dollar(800, 1600)["dollar_formula"] == "$16 / 800"
     assert points_per_dollar(100, 0)["ratio_label"] == "—"
     assert points_per_dollar(100, 0)["formula"] == ""
+    assert points_per_dollar(100, 0)["dollar_formula"] == ""
 
 
 def test_period_points_issued_splits_month_and_quarter():
