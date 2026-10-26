@@ -288,12 +288,16 @@
 </div>
 </div>
 
-<section class="panel budget-calculator" id="budget-calculator">
+<section class="panel budget-calculator" id="budget-calculator" data-rate="points">
   <div class="section-header">
     <div>
       <p class="section-eyebrow">Budget</p>
       <h2>Budget calculator</h2>
       <p class="section-caption">{{ scenario_meta.hint if scenario_meta else 'Estimated program cost' }} for {{ period.period_label }}.</p>
+    </div>
+    <div class="seg" role="group" aria-label="Points or dollars">
+      <button type="button" class="seg-btn is-on" data-rate-choice="points">Points per dollar</button>
+      <button type="button" class="seg-btn" data-rate-choice="dollars">Dollars per point</button>
     </div>
   </div>
 
@@ -356,9 +360,12 @@
       <span class="metric-sub">Points issued</span>
     </div>
     <div>
-      <span class="metric-label">Average points per dollar</span>
-      <strong>{{ sku_totals.points_per_dollar.ratio_label if sku_totals and sku_totals.points_per_dollar else "—" }}</strong>
-      <span class="metric-sub">{{ sku_totals.points_per_dollar.formula if sku_totals and sku_totals.points_per_dollar and sku_totals.points_per_dollar.formula else "Add a reward dollar value" }}</span>
+      <span class="metric-label rate-points">Average points per dollar</span>
+      <span class="metric-label rate-dollars">Average dollars per point</span>
+      <strong class="rate-points">{{ sku_totals.points_per_dollar.ratio_label if sku_totals and sku_totals.points_per_dollar else "—" }}</strong>
+      <strong class="rate-dollars">{{ sku_totals.points_per_dollar.dollar_ratio_label if sku_totals and sku_totals.points_per_dollar else "—" }}</strong>
+      <span class="metric-sub rate-points">{{ sku_totals.points_per_dollar.formula if sku_totals and sku_totals.points_per_dollar and sku_totals.points_per_dollar.formula else "Add a reward dollar value" }}</span>
+      <span class="metric-sub rate-dollars">{{ sku_totals.points_per_dollar.dollar_formula if sku_totals and sku_totals.points_per_dollar and sku_totals.points_per_dollar.dollar_formula else "Add a reward dollar value" }}</span>
     </div>
   </div>
 
@@ -410,7 +417,7 @@
               <th class="num">Units</th>
               <th class="num">Pts / unit</th>
               <th class="num">Points issued</th>
-              <th class="num">Pts / $</th>
+              <th class="num"><span class="rate-points">Pts / $</span><span class="rate-dollars">$ / pt</span></th>
             </tr>
           </thead>
           <tbody>
@@ -422,10 +429,18 @@
               <td class="num">{{ "{:,.0f}".format(row.points_per_unit) }}</td>
               <td class="num">{{ "{:,.0f}".format(row.points_issued) }}</td>
               <td class="num">
-                {{ row.points_per_dollar.ratio_label }}
-                {% if row.points_per_dollar.formula %}
-                <span class="pts-formula">{{ row.points_per_dollar.formula }}</span>
-                {% endif %}
+                <span class="rate-points">
+                  {{ row.points_per_dollar.ratio_label }}
+                  {% if row.points_per_dollar.formula %}
+                  <span class="pts-formula">{{ row.points_per_dollar.formula }}</span>
+                  {% endif %}
+                </span>
+                <span class="rate-dollars">
+                  {{ row.points_per_dollar.dollar_ratio_label }}
+                  {% if row.points_per_dollar.dollar_formula %}
+                  <span class="pts-formula">{{ row.points_per_dollar.dollar_formula }}</span>
+                  {% endif %}
+                </span>
               </td>
             </tr>
             {% else %}
@@ -439,10 +454,18 @@
               <th></th>
               <th class="num">{{ "{:,.0f}".format(sku_totals.total_points_issued) if sku_totals else 0 }}</th>
               <th class="num">
-                {{ sku_totals.points_per_dollar.ratio_label if sku_totals and sku_totals.points_per_dollar else "—" }}
-                {% if sku_totals and sku_totals.points_per_dollar and sku_totals.points_per_dollar.formula %}
-                <span class="pts-formula">{{ sku_totals.points_per_dollar.formula }}</span>
-                {% endif %}
+                <span class="rate-points">
+                  {{ sku_totals.points_per_dollar.ratio_label if sku_totals and sku_totals.points_per_dollar else "—" }}
+                  {% if sku_totals and sku_totals.points_per_dollar and sku_totals.points_per_dollar.formula %}
+                  <span class="pts-formula">{{ sku_totals.points_per_dollar.formula }}</span>
+                  {% endif %}
+                </span>
+                <span class="rate-dollars">
+                  {{ sku_totals.points_per_dollar.dollar_ratio_label if sku_totals and sku_totals.points_per_dollar else "—" }}
+                  {% if sku_totals and sku_totals.points_per_dollar and sku_totals.points_per_dollar.dollar_formula %}
+                  <span class="pts-formula">{{ sku_totals.points_per_dollar.dollar_formula }}</span>
+                  {% endif %}
+                </span>
               </th>
             </tr>
           </tfoot>

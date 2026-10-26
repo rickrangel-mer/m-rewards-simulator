@@ -453,24 +453,58 @@ def format_points_per_dollar(ratio: float) -> str:
     return f"{ratio:,.1f}"
 
 
+def format_dollars_per_point(dollars: float) -> str:
+    """Small rates keep a third decimal so $33 / 500 stays $0.066."""
+    dollars = float(dollars or 0)
+    if dollars >= 1:
+        if abs(dollars - round(dollars)) < 0.005:
+            return f"${dollars:,.0f}"
+        return f"${dollars:,.2f}"
+    text = f"{round(dollars, 3):.3f}".rstrip("0").rstrip(".")
+    if "." not in text:
+        text += ".00"
+    elif len(text.split(".")[1]) == 1:
+        text += "0"
+    return f"${text}"
+
+
 def points_per_dollar(points: float, cost_cents: int) -> dict:
-    """Points divided by reward dollars. 500 points and $33 is about 15.2."""
+    """Points ÷ reward dollars, and the inverse dollars ÷ points.
+
+    500 points and $33 is about 15.2 points per dollar, or $0.066 per point.
+    """
     points = float(points or 0)
     cents = int(cost_cents or 0)
+    empty = {
+        "ratio": None,
+        "ratio_label": "—",
+        "formula": "",
+        "dollar_ratio": None,
+        "dollar_ratio_label": "—",
+        "dollar_formula": "",
+        "cost_label": format_usd(0),
+    }
     if cents <= 0:
-        return {
-            "ratio": None,
-            "ratio_label": "—",
-            "formula": "",
-            "cost_label": format_usd(0),
-        }
-    ratio = points / (cents / 100)
-    return {
+        return empty
+    cost_label = format_usd(cents)
+    dollars = cents / 100
+    ratio = points / dollars
+    result = {
         "ratio": ratio,
         "ratio_label": format_points_per_dollar(ratio),
-        "formula": f"{format_points_count(points)} / {format_usd(cents)}",
-        "cost_label": format_usd(cents),
+        "formula": f"{format_points_count(points)} / {cost_label}",
+        "dollar_ratio": None,
+        "dollar_ratio_label": "—",
+        "dollar_formula": "",
+        "cost_label": cost_label,
     }
+    if points <= 0:
+        return result
+    per_point = dollars / points
+    result["dollar_ratio"] = per_point
+    result["dollar_ratio_label"] = format_dollars_per_point(per_point)
+    result["dollar_formula"] = f"{cost_label} / {format_points_count(points)}"
+    return result
 
 
 def annotate_points_per_dollar(sku_totals: dict, cost_cents: int) -> dict:
