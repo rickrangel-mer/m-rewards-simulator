@@ -143,6 +143,7 @@
     });
     if (window.enhanceTables) window.enhanceTables();
     setupUploadDialog();
+    setupRateToggle();
     return true;
   }
 
@@ -269,5 +270,28 @@
     var saved = event.state && typeof event.state.y === "number" ? event.state.y : window.scrollY;
     swapPage(location.href, false, { scrollTo: saved });
   });
+  function setupRateToggle() {
+    var root = document.getElementById("budget-calculator");
+    if (!root) return;
+    var saved = "points";
+    try { saved = sessionStorage.getItem("mrewards-rate") || "points"; } catch (err) { saved = "points"; }
+    if (saved !== "dollars") saved = "points";
+    root.dataset.rate = saved;
+    Array.prototype.forEach.call(root.querySelectorAll("[data-rate-choice]"), function (btn) {
+      btn.classList.toggle("is-on", btn.getAttribute("data-rate-choice") === saved);
+      if (btn.dataset.bound === "1") return;
+      btn.dataset.bound = "1";
+      btn.addEventListener("click", function () {
+        var choice = btn.getAttribute("data-rate-choice") === "dollars" ? "dollars" : "points";
+        root.dataset.rate = choice;
+        try { sessionStorage.setItem("mrewards-rate", choice); } catch (err) { /* private mode */ }
+        Array.prototype.forEach.call(root.querySelectorAll("[data-rate-choice]"), function (other) {
+          other.classList.toggle("is-on", other.getAttribute("data-rate-choice") === choice);
+        });
+      });
+    });
+  }
+
   setupUploadDialog();
+  setupRateToggle();
 })();

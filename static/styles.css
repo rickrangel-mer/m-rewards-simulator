@@ -533,6 +533,11 @@ h3 {
   color: var(--muted);
 }
 
+#budget-calculator[data-rate="points"] .rate-dollars,
+#budget-calculator[data-rate="dollars"] .rate-points {
+  display: none;
+}
+
 .budget-board {
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);

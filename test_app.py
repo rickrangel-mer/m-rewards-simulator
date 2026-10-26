@@ -1686,9 +1686,14 @@ def test_budget_sku_point_totals_match_units_times_proposed(persist_store):
     assert "SKU-A" in budget
     assert "Estimated cost" not in budget
     assert "Average points per dollar" in budget
+    assert "Dollars per point" in budget
+    assert "data-rate-choice=\"dollars\"" in budget
+    assert "$16 / 800" in budget
+    assert "$0.02" in budget
     assert "July 2026" in budget
     assert "Q3 2026" in budget
     assert "Pts / $" in budget
+    assert "$ / pt" in budget
     all_card = budget[budget.index('data-scenario="all"'):budget.index('data-scenario="lowest"')]
     assert "<strong>" not in all_card
 
