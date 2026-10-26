@@ -440,6 +440,77 @@ def sku_point_totals(period_orders: pd.DataFrame, skus_df: pd.DataFrame, propose
     }
 
 
+def format_points_count(value: float) -> str:
+    value = float(value or 0)
+    if abs(value - round(value)) < 1e-6:
+        return f"{int(round(value)):,}"
+    return f"{value:,.1f}"
+
+
+def format_points_per_dollar(ratio: float) -> str:
+    if abs(ratio - round(ratio)) < 0.05:
+        return f"{ratio:,.0f}"
+    return f"{ratio:,.1f}"
+
+
+def points_per_dollar(points: float, cost_cents: int) -> dict:
+    """Points divided by reward dollars. 500 points and $33 is about 15.2."""
+    points = float(points or 0)
+    cents = int(cost_cents or 0)
+    if cents <= 0:
+        return {
+            "ratio": None,
+            "ratio_label": "—",
+            "formula": "",
+            "cost_label": format_usd(0),
+        }
+    ratio = points / (cents / 100)
+    return {
+        "ratio": ratio,
+        "ratio_label": format_points_per_dollar(ratio),
+        "formula": f"{format_points_count(points)} / {format_usd(cents)}",
+        "cost_label": format_usd(cents),
+    }
+
+
+def annotate_points_per_dollar(sku_totals: dict, cost_cents: int) -> dict:
+    """Copy SKU rows with each row's points ÷ the period's reward cost."""
+    rows = []
+    for row in (sku_totals or {}).get("skus") or []:
+        item = dict(row)
+        item["points_per_dollar"] = points_per_dollar(row.get("points_issued") or 0, cost_cents)
+        rows.append(item)
+    total_points = float((sku_totals or {}).get("total_points_issued") or 0)
+    return {
+        "skus": rows,
+        "total_units": float((sku_totals or {}).get("total_units") or 0),
+        "total_points_issued": total_points,
+        "points_per_dollar": points_per_dollar(total_points, cost_cents),
+    }
+
+
+def period_points_issued(
+    raw: pd.DataFrame,
+    skus_df: pd.DataFrame,
+    proposed: dict | None,
+    year: int,
+    month: int,
+    today: date | None = None,
+) -> dict:
+    """Points issued for the selected month and for that month's quarter."""
+    valid = set()
+    if skus_df is not None and not skus_df.empty and "sku" in skus_df.columns:
+        valid = set(skus_df["sku"].astype(str))
+    month_orders = orders_for_period(raw, year, month, valid, grain="month", today=today)
+    quarter_orders = orders_for_period(raw, year, month, valid, grain="quarter", today=today)
+    return {
+        "month_label": date(int(year), int(month), 1).strftime("%B %Y"),
+        "month_points": sku_point_totals(month_orders, skus_df, proposed)["total_points_issued"],
+        "quarter_label": f"Q{quarter_of(year, month)} {int(year)}",
+        "quarter_points": sku_point_totals(quarter_orders, skus_df, proposed)["total_points_issued"],
+    }
+
+
 def simulate(month_orders, sku_to_title, points_lookup, reward_thresholds) -> pd.DataFrame:
     """Score each store that appears in month_orders. One unit is enough; no min qty."""
     df = month_orders.copy()

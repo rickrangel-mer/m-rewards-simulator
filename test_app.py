@@ -1679,10 +1679,18 @@ def test_budget_sku_point_totals_match_units_times_proposed(persist_store):
         html = TestClient(webapp.app).get("/brands/coca-cola?month=2026-07").text
     budget = _html_between(html, "budget-calculator")
     # Two stores (5+3 units) × $8 = $16; 8 units × 100 pts = 800 points issued.
+    # 800 / $16 = 50 points per dollar.
     assert "$16" in budget
     assert "800" in budget
+    assert "800 / $16" in budget
     assert "SKU-A" in budget
-    assert "Estimated cost" in budget
+    assert "Estimated cost" not in budget
+    assert "Average points per dollar" in budget
+    assert "July 2026" in budget
+    assert "Q3 2026" in budget
+    assert "Pts / $" in budget
+    all_card = budget[budget.index('data-scenario="all"'):budget.index('data-scenario="lowest"')]
+    assert "<strong>" not in all_card
 
 
 def test_grain_month_default_keeps_july_query():
@@ -1729,8 +1737,13 @@ def test_grain_quarter_combines_complete_months(persist_store):
     month_budget = _html_between(month_html, "budget-calculator")
     quarter_budget = _html_between(quarter_html, "budget-calculator")
     # July: S1=250 pts (misses 300), S2=500 (earns) → $8. Quarter: S1=400, S2=500 → $16.
+    # July issues 750 points; Q3 issues 900. Both cards show on each page.
     assert "$8" in month_budget
     assert "$16" in quarter_budget
+    assert "750 / $8" in month_budget
+    assert "900 / $16" in quarter_budget
+    assert "July 2026" in month_budget and "Q3 2026" in month_budget
+    assert "July 2026" in quarter_budget and "Q3 2026" in quarter_budget
     assert "S2" in quarter_html
     # Combined SKU units 18 × 50 current points = 900.
     assert "900" in quarter_budget

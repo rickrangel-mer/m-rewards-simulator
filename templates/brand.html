@@ -299,10 +299,12 @@
 
   <div class="scenario-grid" id="budget-scenarios">
     {% for row in scenarios if row.key != 'lift' %}
-    <a class="scenario-card{% if row.key == scenario %} is-on{% endif %}"
+    <a class="scenario-card{% if row.key == scenario %} is-on{% endif %}" data-scenario="{{ row.key }}"
        href="/brands/{{ brand }}?month={{ selected_month }}{% if grain == 'quarter' %}&amp;grain=quarter{% endif %}&amp;scenario={{ row.key }}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search }}{% endif %}">
       <span class="metric-label">{{ row.label }}</span>
+      {% if row.key != 'all' %}
       <strong>{{ row.total_label }}</strong>
+      {% endif %}
       <span class="metric-sub">{{ row.hint }}</span>
     </a>
     {% endfor %}
@@ -340,16 +342,23 @@
 
   <div class="metrics budget-kpis">
     <div>
-      <span class="metric-label">Estimated cost</span>
-      <strong>{{ budget.total_label if budget else '$0' }}</strong>
-    </div>
-    <div>
       <span class="metric-label">Stores in period</span>
       <strong>{{ "{:,}".format(results.total_stores) if results else 0 }}</strong>
     </div>
     <div>
-      <span class="metric-label">Points issued</span>
-      <strong>{{ "{:,.0f}".format(sku_totals.total_points_issued) if sku_totals else 0 }}</strong>
+      <span class="metric-label">{{ period_points.month_label }}</span>
+      <strong>{{ "{:,.0f}".format(period_points.month_points) }}</strong>
+      <span class="metric-sub">Points issued</span>
+    </div>
+    <div>
+      <span class="metric-label">{{ period_points.quarter_label }}</span>
+      <strong>{{ "{:,.0f}".format(period_points.quarter_points) }}</strong>
+      <span class="metric-sub">Points issued</span>
+    </div>
+    <div>
+      <span class="metric-label">Average points per dollar</span>
+      <strong>{{ sku_totals.points_per_dollar.ratio_label if sku_totals and sku_totals.points_per_dollar else "—" }}</strong>
+      <span class="metric-sub">{{ sku_totals.points_per_dollar.formula if sku_totals and sku_totals.points_per_dollar and sku_totals.points_per_dollar.formula else "Add a reward dollar value" }}</span>
     </div>
   </div>
 
@@ -401,6 +410,7 @@
               <th class="num">Units</th>
               <th class="num">Pts / unit</th>
               <th class="num">Points issued</th>
+              <th class="num">Pts / $</th>
             </tr>
           </thead>
           <tbody>
@@ -411,9 +421,15 @@
               <td class="num">{{ "{:,.0f}".format(row.units) }}</td>
               <td class="num">{{ "{:,.0f}".format(row.points_per_unit) }}</td>
               <td class="num">{{ "{:,.0f}".format(row.points_issued) }}</td>
+              <td class="num">
+                {{ row.points_per_dollar.ratio_label }}
+                {% if row.points_per_dollar.formula %}
+                <span class="pts-formula">{{ row.points_per_dollar.formula }}</span>
+                {% endif %}
+              </td>
             </tr>
             {% else %}
-            <tr><td colspan="5">No catalog units in this period.</td></tr>
+            <tr><td colspan="6">No catalog units in this period.</td></tr>
             {% endfor %}
           </tbody>
           <tfoot>
@@ -422,6 +438,12 @@
               <th class="num">{{ "{:,.0f}".format(sku_totals.total_units) if sku_totals else 0 }}</th>
               <th></th>
               <th class="num">{{ "{:,.0f}".format(sku_totals.total_points_issued) if sku_totals else 0 }}</th>
+              <th class="num">
+                {{ sku_totals.points_per_dollar.ratio_label if sku_totals and sku_totals.points_per_dollar else "—" }}
+                {% if sku_totals and sku_totals.points_per_dollar and sku_totals.points_per_dollar.formula %}
+                <span class="pts-formula">{{ sku_totals.points_per_dollar.formula }}</span>
+                {% endif %}
+              </th>
             </tr>
           </tfoot>
         </table>

@@ -13,6 +13,8 @@ from simulator import (
     parse_grain,
     period_copy,
     period_months,
+    period_points_issued,
+    points_per_dollar,
     simulate,
     sku_point_totals,
     summarize_results,
@@ -211,6 +213,35 @@ def test_sku_point_totals_units_times_proposed():
     assert totals["total_units"] == 8
     assert totals["total_points_issued"] == 800
     assert totals["skus"][0]["points_per_unit"] == 100
+
+
+def test_points_per_dollar_shows_points_over_cost():
+    example = points_per_dollar(500, 3300)
+    assert example["formula"] == "500 / $33"
+    assert example["ratio_label"] == "15.2"
+    assert points_per_dollar(800, 1600)["ratio_label"] == "50"
+    assert points_per_dollar(800, 1600)["formula"] == "800 / $16"
+    assert points_per_dollar(100, 0)["ratio_label"] == "—"
+    assert points_per_dollar(100, 0)["formula"] == ""
+
+
+def test_period_points_issued_splits_month_and_quarter():
+    raw = pd.DataFrame({
+        "store_id": ["S1", "S1", "S2"],
+        "sku": ["A", "A", "A"],
+        "order_date": pd.to_datetime(["2026-07-10", "2026-08-12", "2026-07-12"]),
+        "total_quantity": [5, 3, 10],
+    })
+    skus = pd.DataFrame({
+        "sku": ["A"],
+        "product_title": ["Prod A"],
+        "current_points": [50],
+    })
+    issued = period_points_issued(raw, skus, {}, 2026, 7, today=date(2026, 9, 11))
+    assert issued["month_label"] == "July 2026"
+    assert issued["quarter_label"] == "Q3 2026"
+    assert issued["month_points"] == 750
+    assert issued["quarter_points"] == 900
 
 
 def test_dollars_to_cents_and_format():

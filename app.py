@@ -74,6 +74,8 @@ from simulator import (
     format_usd,
     normalize_reward,
     orders_for_period,
+    annotate_points_per_dollar,
+    period_points_issued,
     lift_quarter_choices,
     lift_quarter_key,
     parse_grain,
@@ -632,10 +634,12 @@ def run_brand_simulation(
         lift_quarter=lift_q,
     )
     chosen = select_scenario(scenarios, scenario)
+    sku_totals = annotate_points_per_dollar(chosen["sku_totals"], chosen["budget"]["total_cents"])
     return {
         "results": results,
         "budget": chosen["budget"],
-        "sku_totals": chosen["sku_totals"],
+        "sku_totals": sku_totals,
+        "period_points": period_points_issued(raw, skus_df, proposed, year, mon, today=today),
         "scenarios": scenarios,
         "scenario": chosen["key"],
         "scenario_meta": chosen,
@@ -694,6 +698,7 @@ def brand_page_context(
         results = sim["results"]
         budget = sim["budget"]
         sku_totals = sim["sku_totals"]
+        period_points = sim["period_points"]
         period = sim["period"]
         scenarios = sim["scenarios"]
         scenario = sim["scenario"]
@@ -707,7 +712,13 @@ def brand_page_context(
         scenarios = empty_scenarios(rewards)
         scenario_meta = select_scenario(scenarios, scenario)
         budget = scenario_meta["budget"]
-        sku_totals = scenario_meta["sku_totals"]
+        sku_totals = annotate_points_per_dollar(scenario_meta["sku_totals"], budget["total_cents"])
+        period_points = {
+            "month_label": "This month",
+            "month_points": 0,
+            "quarter_label": "This quarter",
+            "quarter_points": 0,
+        }
         period = {
             "grain": grain,
             "period_label": "no order months yet",
@@ -748,6 +759,7 @@ def brand_page_context(
         "results": results,
         "budget": budget,
         "sku_totals": sku_totals,
+        "period_points": period_points,
         "flash": flash,
         "bulk_value": bulk_value,
         "open_new_brand": False,
