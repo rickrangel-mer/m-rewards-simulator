@@ -309,7 +309,7 @@ def lift_quarter_choices(months: list[str] | None, selected_year: int | None) ->
 def lift_copy(pct: int, year: int, quarter: int) -> tuple[str, str]:
     factor = lift_factor(pct)
     label = f"{pct}% lift from Q{quarter} {year}"
-    hint = f"Q{quarter} {year} units × {factor:g} ({pct:+d}%), then pay all rewards"
+    hint = f"Q{quarter} {year} units × {factor:g} ({pct:+d}%), then lowest first"
     return label, hint
 
 
@@ -580,7 +580,7 @@ def build_budget_scenarios(
     lift_year: int | None = None,
     lift_quarter: int = DEFAULT_LIFT_QUARTER,
 ) -> list[dict]:
-    """Pay-all, exclusive redeem, and a volume lift on a chosen quarter."""
+    """Pay-all, exclusive redeem, and a volume lift scored as lowest first."""
     proposed = proposed or {}
     thresholds = reward_thresholds(rewards)
     base_sku = sku_point_totals(period_orders, skus_df, proposed)
@@ -601,7 +601,7 @@ def build_budget_scenarios(
             SCENARIO_LIFT,
             label,
             hint,
-            redeem_counts(lifted_points, rewards, SCENARIO_ALL),
+            redeem_counts(lifted_points, rewards, SCENARIO_LOWEST),
             sku_point_totals(lifted, skus_df, proposed),
         ),
     ]
