@@ -1892,3 +1892,143 @@ def test_budget_scenarios_exclusive_redeem_and_q3_lift(persist_store):
     assert "30% lift from Q1 2026" in q1_budget
     assert 'value="2026-Q1" selected' in q1_budget
     assert "No catalog units in this period." in q1_budget
+
+
+# ---------------------------------------------------------------------------
+# Regressions found running the app against a real Postgres
+# ---------------------------------------------------------------------------
+
+def _orders_from(rows):
+    return pd.DataFrame(rows, columns=["store_id", "sku", "order_date", "total_quantity"]).assign(
+        order_date=lambda df: pd.to_datetime(df["order_date"])
+    )
+
+
+def test_quarter_button_opens_that_quarter_when_data_starts_mid_quarter():
+    # Orders begin in February, so January is not an available month. The Q1
+    # button used to link ?month=2026-01, which fell back to the latest month
+    # and showed Q3 instead.
+    orders = _orders_from([
+        ("S1", "SKU-A", "2026-02-10", 4),
+        ("S2", "SKU-A", "2026-08-10", 4),
+    ])
+    with patch.object(webapp, "load_orders_or_error", return_value=(orders, {"last_refreshed_month": "2026-08"}, None)), \
+         patch.object(webapp, "load_brand_skus", return_value=_sample_skus()), \
+         patch.object(webapp, "period_today", return_value=date(2026, 9, 15)):
+        client = TestClient(webapp.app)
+        page = client.get("/brands/coca-cola")
+        assert b"month=2026-02&amp;grain=quarter" in page.content
+        q1 = client.get("/brands/coca-cola?month=2026-02&grain=quarter")
+    assert q1.status_code == 200
+    assert b"Q1 2026" in q1.content
+    assert b"Using Q1 2026 ordering data" in q1.content
+
+
+def test_add_reward_after_remove_does_not_duplicate_a_name(persist_store):
+    persist_store.rewards["monster"] = [
+        ("Reward 1", 6500, 0), ("Reward 3", 12000, 0),
+        ("Reward 4", 15000, 0), ("Reward 5", 35000, 0),
+    ]
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        client.post(
+            "/brands/monster/simulate",
+            data={
+                "month": "2026-07",
+                "action": "add_reward",
+                "reward_name": ["Reward 1", "Reward 3", "Reward 4", "Reward 5"],
+                "reward_points": ["6500", "12000", "15000", "35000"],
+                "new_reward_points": "5000",
+            },
+            follow_redirects=False,
+        )
+    names = [r[0] for r in persist_store.rewards["monster"]]
+    assert len(names) == len(set(names)) == 5
+    assert ("Reward 5", 35000, 0) in persist_store.rewards["monster"]
+
+
+def test_duplicate_or_reserved_reward_names_keep_their_own_cutoffs(persist_store):
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        response = TestClient(webapp.app).post(
+            "/brands/coca-cola/simulate",
+            data={
+                "month": "2026-07",
+                "action": "simulate",
+                "reward_name": ["Gold", "Gold", "total_points"],
+                "reward_points": ["100", "999999", "1"],
+            },
+        )
+    assert response.status_code == 200
+    saved = persist_store.rewards["coca-cola"]
+    assert [r[0] for r in saved] == ["Gold", "Gold (2)", "total_points (2)"]
+    assert [r[1] for r in saved] == [100, 999999, 1]
+
+
+def test_scoring_keys_on_sku_when_titles_repeat():
+    skus = pd.DataFrame({
+        "sku": ["SKU-A", "SKU-B"],
+        "product_title": ["Cola 12oz", "Cola 12oz"],
+        "current_points": [10, 500],
+    })
+    orders = _orders_from([("S1", "SKU-A", "2026-07-10", 1)])
+    sim = webapp.run_brand_simulation(
+        orders, skus, "2026-07", {}, [("R", 100, 0)], today=date(2026, 8, 15)
+    )
+    # One unit of SKU-A is 10 points, not SKU-B's 500.
+    assert sim["results"]["max_points"] == 10
+    assert sim["results"]["rewards"][0]["count"] == 0
+
+
+@pytest.mark.parametrize("bad", ["inf", "1e400", "99999999999999", "nan", "abc"])
+def test_oversized_or_junk_numbers_do_not_500(persist_store, bad):
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/coca-cola/simulate",
+            data={
+                "month": "2026-07",
+                "action": "simulate",
+                "bulk_value": bad,
+                "sku": "SKU-A",
+                "proposed_points": bad,
+                "reward_name": "R1",
+                "reward_points": bad,
+                "reward_value": bad,
+            },
+        )
+        removed = client.post(
+            "/brands/coca-cola/simulate",
+            data={"month": "2026-07", "action": "remove_reward_x", "reward_name": "R1", "reward_points": "5"},
+            follow_redirects=False,
+        )
+    assert response.status_code == 200
+    assert removed.status_code == 303
+    name, pts, cents = persist_store.rewards["coca-cola"][0]
+    assert 0 <= pts <= 2**31 - 1
+    assert 0 <= cents <= 2**31 - 1
+
+
+def test_catalog_replace_ignores_payload_without_skus(persist_store):
+    persist_store.catalogs["coca-cola"] = [{"sku": "SKU-A", "product_title": "Keep me", "current_points": 1}]
+    response = TestClient(webapp.app).post(
+        "/brands/coca-cola/catalog/confirm",
+        data={"month": "2026-07", "action": "replace", "payload": json.dumps([{"x": 1}])},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert [r["sku"] for r in persist_store.catalogs["coca-cola"]] == ["SKU-A"]
+
+
+def test_search_with_ampersand_survives_redirect():
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        response = TestClient(webapp.app).post(
+            "/brands/coca-cola/simulate",
+            data={"month": "2026-07", "action": "bulk_apply", "q": "a&b c", "selected_sku": "SKU-A",
+                  "reward_name": "R", "reward_points": "5"},
+            follow_redirects=False,
+        )
+    assert response.headers["location"] == "/brands/coca-cola?month=2026-07&q=a%26b+c"
