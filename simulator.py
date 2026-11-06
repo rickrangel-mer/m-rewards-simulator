@@ -620,6 +620,17 @@ def build_budget_scenarios(
     return scenarios
 
 
+# The proposed-points import ignores every other column. The downloadable
+# template is this pair of headers and nothing else, so a later miss can be
+# checked against a file we know the parser accepts.
+PROPOSED_POINTS_COLUMNS = ("sku", "points")
+
+
+def proposed_points_template_frame() -> pd.DataFrame:
+    """Headers only: the minimum workbook that updates proposed points."""
+    return pd.DataFrame(columns=list(PROPOSED_POINTS_COLUMNS))
+
+
 def parse_imported_points(file_bytes: bytes, filename: str):
     name = filename.lower()
     buffer = io.BytesIO(file_bytes)
@@ -634,10 +645,15 @@ def parse_imported_points(file_bytes: bytes, filename: str):
         return None, f"Could not read file: {exc}"
 
     df.columns = df.columns.str.strip().str.lower()
-    if "sku" not in df.columns or "points" not in df.columns:
-        return None, f"File must contain 'sku' and 'points' columns. Found: {', '.join(df.columns)}"
+    missing = [col for col in PROPOSED_POINTS_COLUMNS if col not in df.columns]
+    if missing:
+        return None, (
+            "File must contain 'sku' and 'points' columns. "
+            f"Found: {', '.join(df.columns)}. "
+            "Download the points template and fill those two columns."
+        )
 
-    df = df[["sku", "points"]].dropna(subset=["sku"])
+    df = df[list(PROPOSED_POINTS_COLUMNS)].dropna(subset=["sku"])
     df["sku"] = df["sku"].astype(str).str.strip()
     result = {}
     for _, row in df.iterrows():

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 import app as webapp
 from data import DuplicateBrandError, DuplicateUserError, overlay_catalog, overlay_proposed_points
-from simulator import BRAND_DEFAULTS
+from simulator import BRAND_DEFAULTS, parse_imported_points, proposed_points_template_frame
 
 
 def _sample_orders():
@@ -354,6 +354,9 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Bulk point value" in sku
     assert "Apply to selected" in sku
     assert "Import proposed points" in sku
+    assert "Download points template" in sku
+    assert 'href="/proposed-points-template.xlsx"' in sku
+    assert "only sku and points" in sku
     assert "Export SKU CSV" in sku
     assert "Upload catalog" in sku
     assert "Download catalog Excel" in sku
@@ -1269,6 +1272,65 @@ def test_create_brand_assigns_slug_from_display_name(persist_store):
     assert "Diet Pepsi" in page.text
 
 
+def test_download_proposed_points_template():
+    client = TestClient(webapp.app)
+    response = client.get("/proposed-points-template.xlsx")
+    assert response.status_code == 200
+    assert "spreadsheetml" in response.headers["content-type"]
+    assert "proposed_points_template.xlsx" in response.headers["content-disposition"]
+    df = pd.read_excel(BytesIO(response.content))
+    assert list(df.columns) == ["sku", "points"]
+    assert len(df) == 0
+    mapping, error = parse_imported_points(response.content, "proposed_points_template.xlsx")
+    assert error is None
+    assert mapping == {}
+
+
+def test_filled_points_template_updates_proposed_points(persist_store):
+    """sku + points, and nothing else, is enough for proposed points to show up."""
+    persist_store.proposed["coca-cola"] = {"SKU-B": 200}
+    filled = proposed_points_template_frame()
+    filled.loc[0] = ["SKU-A", 400]
+    buffer = BytesIO()
+    filled.to_excel(buffer, index=False)
+    orders_patch, skus_patch = _mocked_client(skus=_two_skus())
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/coca-cola/import",
+            data={"month": "2026-07"},
+            files={
+                "file": (
+                    "proposed_points_template.xlsx",
+                    BytesIO(buffer.getvalue()),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            follow_redirects=False,
+        )
+        page = client.get(response.headers["location"])
+    assert persist_store.proposed["coca-cola"] == {"SKU-A": 400, "SKU-B": 200}
+    assert b'value="400"' in page.content
+    assert b'value="200"' in page.content
+    assert "Imported points for 1 SKUs." in page.text
+
+
+def test_import_points_says_when_file_parsed_but_skus_miss(persist_store):
+    orders_patch, skus_patch = _mocked_client(skus=_two_skus())
+    with orders_patch, skus_patch:
+        client = TestClient(webapp.app)
+        response = client.post(
+            "/brands/coca-cola/import",
+            data={"month": "2026-07"},
+            files={"file": ("points.csv", BytesIO(b"sku,points\nNOT-A-SKU,400\n"), "text/csv")},
+            follow_redirects=False,
+        )
+        page = client.get(response.headers["location"])
+    assert persist_store.proposed.get("coca-cola", {}) == {}
+    assert "The file was read (sku and points)" in page.text
+    assert "none of those SKUs" in page.text
+
+
 def test_download_catalog_template():
     client = TestClient(webapp.app)
     response = client.get("/catalog-template.xlsx")
@@ -1393,6 +1455,15 @@ def test_unauthenticated_brand_redirects_to_login():
 def test_unauthenticated_catalog_template_redirects_to_login():
     with _logged_out():
         response = TestClient(webapp.app).get("/catalog-template.xlsx", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("/login")
+
+
+def test_unauthenticated_proposed_points_template_redirects_to_login():
+    with _logged_out():
+        response = TestClient(webapp.app).get(
+            "/proposed-points-template.xlsx", follow_redirects=False
+        )
     assert response.status_code == 302
     assert response.headers["location"].startswith("/login")
 

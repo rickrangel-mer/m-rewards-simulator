@@ -10,6 +10,7 @@ from simulator import (
     get_month_orders,
     orders_for_period,
     parse_imported_points,
+    proposed_points_template_frame,
     parse_grain,
     period_copy,
     period_months,
@@ -60,6 +61,12 @@ def test_build_points_lookup_prefers_proposed_sku_override():
     lookup = build_points_lookup(skus, {"A": 99})
     assert lookup["Prod A"] == 99
     assert lookup["Prod B"] == 20
+
+
+def test_proposed_points_template_frame_is_sku_and_points_only():
+    df = proposed_points_template_frame()
+    assert list(df.columns) == ["sku", "points"]
+    assert df.empty
 
 
 def test_parse_imported_points_csv():

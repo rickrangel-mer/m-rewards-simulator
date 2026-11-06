@@ -1401,6 +1401,10 @@ body[data-theme="ferrera"] .brand-nav a.active {
   font-size: 0.85rem;
 }
 
+.upload-template {
+  margin: -0.35rem 0 0.85rem;
+}
+
 .dropzone {
   position: relative;
   display: flex;
