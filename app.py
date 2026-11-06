@@ -80,6 +80,7 @@ from simulator import (
     lift_quarter_key,
     parse_grain,
     parse_imported_points,
+    proposed_points_template_frame,
     parse_lift_pct,
     parse_lift_quarter,
     parse_scenario,
@@ -589,6 +590,17 @@ def download_catalog_template():
     )
 
 
+@app.get("/proposed-points-template.xlsx")
+def download_proposed_points_template():
+    buffer = io.BytesIO()
+    proposed_points_template_frame().to_excel(buffer, index=False)
+    return Response(
+        buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="proposed_points_template.xlsx"'},
+    )
+
+
 def run_brand_simulation(
     raw,
     skus_df,
@@ -980,7 +992,10 @@ async def import_points(
     if skipped:
         msg += f" {skipped} SKUs skipped (not in this brand)."
     if matched == 0:
-        msg = "No matching SKUs found in the uploaded file."
+        msg = (
+            "The file was read (sku and points), but none of those SKUs "
+            "are in this brand's catalog."
+        )
     request.session["flash"] = msg
     return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)
 

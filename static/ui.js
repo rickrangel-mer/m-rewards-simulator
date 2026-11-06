@@ -12,6 +12,7 @@
     var okBtn = document.getElementById("upload-ok");
     var source = document.getElementById("upload-source");
     var hint = document.getElementById("upload-hint");
+    var pointsTemplate = document.getElementById("points-template-row");
     var dropzone = document.getElementById("upload-dropzone");
     var picker = document.getElementById("upload-file");
     var filename = document.getElementById("upload-filename");
@@ -19,10 +20,13 @@
     var catalogForm = document.getElementById("catalog-upload");
 
     function hints() {
-      if (!source || !hint) return;
-      hint.textContent = source.value === "catalog"
-        ? "Excel/CSV with sku, product_title, current_points"
-        : "CSV/Excel with sku + points";
+      var points = !source || source.value !== "catalog";
+      if (hint) {
+        hint.textContent = points
+          ? "CSV or Excel with only sku and points."
+          : "Excel/CSV with sku, product_title, current_points";
+      }
+      if (pointsTemplate) pointsTemplate.hidden = !points;
     }
 
     function setFile(file) {
