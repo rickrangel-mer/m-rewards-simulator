@@ -196,14 +196,71 @@ def reward_thresholds(rewards) -> dict[str, int]:
     return {name: pts for name, pts, _cents in (normalize_reward(r) for r in rewards)}
 
 
+# Postgres `int` columns (points, value_cents) top out at 2**31 - 1. Anything a
+# form posts is clamped into [0, PG_INT_MAX] so a typo cannot 500 the page.
+PG_INT_MAX = 2**31 - 1
+
+# simulate() stores one boolean column per reward name next to these columns,
+# so a reward may not share a name with them.
+STORE_POINT_COLUMNS = frozenset({"store_id", "total_points", "total_units", "distinct_skus"})
+
+
+def parse_form_int(value, default: int = 0, lo: int = 0, hi: int = PG_INT_MAX) -> int:
+    """Whole number from form text ("12", "12.7", "1e3"). Junk, NaN and inf give default."""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return default
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return default
+    if number != number or number in (float("inf"), float("-inf")):
+        return default
+    return max(lo, min(hi, int(number)))
+
+
+def unique_reward_names(rewards) -> list[tuple[str, int, int]]:
+    """Make reward names unique so each keeps its own cutoff and budget line.
+
+    Two rewards named "Reward 5" used to collapse into one threshold. A repeat
+    becomes "Reward 5 (2)". Names that collide with simulate()'s own columns
+    get the same suffix.
+    """
+    out = []
+    used: set[str] = set()
+    for item in rewards:
+        name, pts, cents = normalize_reward(item)
+        name = name.strip() or "Reward"
+        candidate = name
+        n = 2
+        while candidate in used or candidate in STORE_POINT_COLUMNS:
+            candidate = f"{name} ({n})"
+            n += 1
+        used.add(candidate)
+        out.append((candidate, pts, cents))
+    return out
+
+
+def next_reward_name(rewards) -> str:
+    """First "Reward N" not already taken."""
+    taken = {normalize_reward(r)[0] for r in rewards}
+    n = len(taken) + 1
+    while f"Reward {n}" in taken:
+        n += 1
+    return f"Reward {n}"
+
+
 def dollars_to_cents(value) -> int:
     text = str(value if value is not None else "").strip()
     if not text:
         return 0
     try:
-        return int(round(float(text) * 100))
+        dollars = float(text)
     except (TypeError, ValueError):
         return 0
+    if dollars != dollars or dollars in (float("inf"), float("-inf")):
+        return 0
+    return max(0, min(PG_INT_MAX, int(round(dollars * 100))))
 
 
 def cents_to_dollar_input(cents) -> str:
@@ -314,28 +371,33 @@ def lift_copy(pct: int, year: int, quarter: int) -> tuple[str, str]:
 
 
 def available_quarters(months: list[str]) -> list[dict]:
-    """Unique calendar quarters represented in available year-month keys."""
-    seen = set()
-    out = []
+    """Unique calendar quarters represented in available year-month keys.
+
+    Each quarter links to its earliest month that has orders. Linking to the
+    quarter's first calendar month broke when data started mid-quarter: the
+    page could not find e.g. 2026-01, fell back to the latest month, and the
+    "Q1" button showed a different quarter.
+    """
+    by_quarter: dict[tuple[int, int], str] = {}
     for stamp in months or []:
+        stamp = str(stamp)
         try:
-            year = int(str(stamp)[:4])
-            month = int(str(stamp)[5:7])
+            year = int(stamp[:4])
+            month = int(stamp[5:7])
         except (TypeError, ValueError):
             continue
-        q = quarter_of(year, month)
-        key = (year, q)
-        if key in seen:
-            continue
-        seen.add(key)
-        first = (q - 1) * 3 + 1
-        out.append({
+        key = (year, quarter_of(year, month))
+        if key not in by_quarter or stamp < by_quarter[key]:
+            by_quarter[key] = stamp
+    return [
+        {
             "year": year,
             "quarter": q,
-            "month": f"{year}-{first:02d}",
+            "month": stamp,
             "label": f"Q{q} {year}",
-        })
-    return out
+        }
+        for (year, q), stamp in by_quarter.items()
+    ]
 
 
 def budget_from_counts(counts: dict, rewards) -> dict:
@@ -406,7 +468,7 @@ def lift_orders(period_orders: pd.DataFrame, factor: float = 1.3) -> pd.DataFram
 def sku_point_totals(period_orders: pd.DataFrame, skus_df: pd.DataFrame, proposed: dict[str, int] | None = None) -> dict:
     """Units × proposed points (falling back to current points) per catalog SKU."""
     proposed = proposed or {}
-    lookup = build_points_lookup(skus_df, proposed) if skus_df is not None and not skus_df.empty else {}
+    lookup = build_sku_points(skus_df, proposed)
     units: dict[str, float] = {}
     if period_orders is not None and not period_orders.empty:
         grouped = period_orders.groupby(period_orders["sku"].astype(str))["total_quantity"].sum()
@@ -419,7 +481,7 @@ def sku_point_totals(period_orders: pd.DataFrame, skus_df: pd.DataFrame, propose
             sku = str(row["sku"])
             title = row["product_title"]
             qty = units.get(sku, 0.0)
-            pts = int(lookup.get(title, row.get("current_points") or 0) or 0)
+            pts = int(lookup.get(sku, row.get("current_points") or 0) or 0)
             issued = qty * pts
             if qty <= 0:
                 continue
@@ -545,11 +607,21 @@ def period_points_issued(
     }
 
 
-def simulate(month_orders, sku_to_title, points_lookup, reward_thresholds) -> pd.DataFrame:
-    """Score each store that appears in month_orders. One unit is enough; no min qty."""
+def simulate(month_orders, sku_to_title, points_lookup, reward_thresholds, sku_points=None) -> pd.DataFrame:
+    """Score each store that appears in month_orders. One unit is enough; no min qty.
+
+    ``sku_points`` (SKU -> points) wins when given; ``points_lookup`` is the
+    older title-keyed map and is only used for SKUs missing from it.
+    """
     df = month_orders.copy()
+    df["sku"] = df["sku"].astype(str)
     df["product_title"] = df["sku"].map(sku_to_title)
-    df["points_per_unit"] = df["product_title"].map(points_lookup).fillna(0)
+    by_title = df["product_title"].map(points_lookup)
+    if sku_points:
+        df["points_per_unit"] = df["sku"].map(sku_points).fillna(by_title).fillna(0)
+    else:
+        df["points_per_unit"] = by_title.fillna(0)
+    df["points_per_unit"] = pd.to_numeric(df["points_per_unit"], errors="coerce").fillna(0)
     df["points_earned"] = df["total_quantity"] * df["points_per_unit"]
 
     store_points = df.groupby("store_id").agg(
@@ -591,7 +663,10 @@ def build_budget_scenarios(
     base_orders = orders_for_period(raw, lift_year, anchor_month, skus, grain="quarter", today=today)
     factor = lift_factor(lift_pct)
     lifted = lift_orders(base_orders, factor)
-    lifted_points = simulate(lifted, sku_to_title, points_lookup, thresholds)
+    lifted_points = simulate(
+        lifted, sku_to_title, points_lookup, thresholds,
+        sku_points=build_sku_points(skus_df, proposed),
+    )
     label, hint = lift_copy(lift_pct, lift_year, lift_quarter)
     specs = [
         (SCENARIO_ALL, "Pay all rewards", "Every reward each store qualifies for", redeem_counts(store_points, rewards, SCENARIO_ALL), base_sku),
@@ -657,15 +732,38 @@ def parse_imported_points(file_bytes: bytes, filename: str):
     df["sku"] = df["sku"].astype(str).str.strip()
     result = {}
     for _, row in df.iterrows():
-        try:
-            result[str(row["sku"])] = int(float(row["points"]))
-        except (ValueError, TypeError):
-            result[str(row["sku"])] = 0
+        result[str(row["sku"])] = parse_form_int(row["points"])
     return result, None
 
 
+def build_sku_points(skus_df: pd.DataFrame, proposed: dict[str, int] | None) -> dict[str, int]:
+    """Map SKU -> points, using proposed overrides when > 0.
+
+    Scoring keys on SKU, not title: two catalog SKUs that share a title (or
+    both have a blank title) must keep their own point values.
+    """
+    proposed = proposed or {}
+    out: dict[str, int] = {}
+    if skus_df is None or skus_df.empty:
+        return out
+    for _, row in skus_df.iterrows():
+        sku = str(row["sku"])
+        title = row.get("product_title")
+        override = proposed.get(sku)
+        if override is None and title:
+            override = proposed.get(title)
+        if override is not None and int(override) > 0:
+            out[sku] = int(override)
+        else:
+            out[sku] = int(row.get("current_points") or 0)
+    return out
+
+
 def build_points_lookup(skus_df: pd.DataFrame, proposed: dict[str, int]) -> dict:
-    """Map product_title -> points, using proposed overrides when > 0."""
+    """Map product_title -> points, using proposed overrides when > 0.
+
+    Kept for callers that only have titles; scoring uses build_sku_points().
+    """
     lookup = {}
     for _, row in skus_df.iterrows():
         title = row["product_title"]

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import pandas as pd
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -68,6 +68,7 @@ from simulator import (
     budget_from_results,
     build_budget_scenarios,
     build_points_lookup,
+    build_sku_points,
     cents_to_dollar_input,
     compute_store_penetration,
     dollars_to_cents,
@@ -78,6 +79,8 @@ from simulator import (
     period_points_issued,
     lift_quarter_choices,
     lift_quarter_key,
+    next_reward_name,
+    parse_form_int,
     parse_grain,
     parse_imported_points,
     proposed_points_template_frame,
@@ -92,6 +95,7 @@ from simulator import (
     simulate,
     sku_point_totals,
     summarize_results,
+    unique_reward_names,
 )
 from refresh_orders import run_brand_refresh
 
@@ -369,7 +373,7 @@ def set_proposed(brand: str, patch: dict[str, int]) -> dict[str, int]:
 def get_rewards(brand: str) -> list[tuple[str, int, int]]:
     stored = load_brand_rewards(brand)
     if stored:
-        return [normalize_reward(r) for r in stored]
+        return unique_reward_names(stored)
     defaults = BRAND_DEFAULTS.get(brand, {}).get("rewards") or {}
     return [(str(n), int(p), 0) for n, p in defaults.items()]
 
@@ -425,7 +429,7 @@ def select_scenario(scenarios: list[dict], scenario: str) -> dict:
 
 
 def set_rewards(brand: str, rewards: list[tuple]) -> None:
-    save_brand_rewards(brand, [normalize_reward(r) for r in rewards])
+    save_brand_rewards(brand, unique_reward_names(rewards))
 
 
 def enrich_skus(raw: pd.DataFrame, skus_df: pd.DataFrame) -> pd.DataFrame:
@@ -479,12 +483,8 @@ def parse_reward_form(form) -> list[tuple[str, int, int]]:
             continue
         pts_raw = points[i] if i < len(points) else 0
         val_raw = values[i] if i < len(values) else 0
-        try:
-            pts = int(float(pts_raw))
-        except (TypeError, ValueError):
-            pts = 0
-        rewards.append((name, pts, dollars_to_cents(val_raw)))
-    return rewards
+        rewards.append((name, parse_form_int(pts_raw), dollars_to_cents(val_raw)))
+    return unique_reward_names(rewards)
 
 
 def parse_proposed_patch(form) -> dict[str, int]:
@@ -493,12 +493,7 @@ def parse_proposed_patch(form) -> dict[str, int]:
     proposed_vals = form.getlist("proposed_points")
     out = {}
     for sku, pts in zip(skus, proposed_vals):
-        sku = str(sku)
-        try:
-            value = int(float(pts or 0))
-        except (TypeError, ValueError):
-            value = 0
-        out[sku] = value
+        out[str(sku)] = parse_form_int(pts)
     return out
 
 
@@ -621,13 +616,14 @@ def run_brand_simulation(
     today = today or period_today()
     valid = set(skus_df["sku"].astype(str))
     points_lookup = build_points_lookup(skus_df, proposed)
+    sku_points = build_sku_points(skus_df, proposed)
     sku_to_title = dict(zip(skus_df["sku"].astype(str), skus_df["product_title"]))
     months = period_months(year, mon, grain, today=today)
     period_orders = orders_for_period(raw, year, mon, valid, grain=grain, today=today)
     if not period_orders.empty and "sku" in skus_df.columns:
         period_orders = period_orders.merge(skus_df[["sku", "product_title"]], on="sku", how="inner")
     thresholds = reward_thresholds(rewards)
-    store_points = simulate(period_orders, sku_to_title, points_lookup, thresholds)
+    store_points = simulate(period_orders, sku_to_title, points_lookup, thresholds, sku_points=sku_points)
     results = summarize_results(store_points, thresholds)
     scenarios = build_budget_scenarios(
         store_points,
@@ -871,7 +867,7 @@ async def simulate_brand(
     brand: str,
     month: str = Form(...),
     q: str = Form(""),
-    bulk_value: int = Form(100),
+    bulk_value: str = Form("100"),
     action: str = Form("simulate"),
     grain: str = Form("month"),
     scenario: str = Form("all"),
@@ -885,6 +881,7 @@ async def simulate_brand(
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
     lift_pct = parse_lift_pct(lift)
+    bulk_value = parse_form_int(bulk_value, default=100)
     form = await request.form()
     rewards = parse_reward_form(form)
     if not rewards:
@@ -905,24 +902,21 @@ async def simulate_brand(
         return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario, lift_pct, lift_quarter)}", status_code=303)
 
     if action == "add_reward":
-        new_name = (form.get("new_reward_name") or "").strip() or f"Reward {len(rewards) + 1}"
-        try:
-            new_pts = int(float(form.get("new_reward_points") or 5000))
-        except (TypeError, ValueError):
-            new_pts = 5000
+        new_name = (form.get("new_reward_name") or "").strip() or next_reward_name(rewards)
+        new_pts = parse_form_int(form.get("new_reward_points"), default=5000)
         new_cents = dollars_to_cents(form.get("new_reward_value"))
         rewards.append((new_name, new_pts, new_cents))
         set_rewards(brand, rewards)
         set_proposed(brand, patch)
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain, scenario=scenario, lift_pct=lift_pct, lift_quarter=lift_quarter)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario, lift_pct, lift_quarter)}", status_code=303)
 
     if action.startswith("remove_reward_"):
-        idx = int(action.split("_")[-1])
+        idx = parse_form_int(action.rsplit("_", 1)[-1], default=-1)
         if 0 <= idx < len(rewards):
             rewards.pop(idx)
         set_rewards(brand, rewards)
         set_proposed(brand, patch)
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain, scenario=scenario, lift_pct=lift_pct, lift_quarter=lift_quarter)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario, lift_pct, lift_quarter)}", status_code=303)
 
     proposed = set_proposed(brand, patch)
 
@@ -1035,20 +1029,20 @@ def _month_query(
     lift_pct: int = DEFAULT_LIFT_PCT,
     lift_quarter: str = "",
 ) -> str:
-    qs = f"?month={month}"
+    params = [("month", month or "")]
     if parse_grain(grain) == "quarter":
-        qs += "&grain=quarter"
+        params.append(("grain", "quarter"))
     if parse_scenario(scenario) != SCENARIO_ALL:
-        qs += f"&scenario={parse_scenario(scenario)}"
+        params.append(("scenario", parse_scenario(scenario)))
     pct = parse_lift_pct(lift_pct)
     if pct != DEFAULT_LIFT_PCT:
-        qs += f"&lift={pct}"
+        params.append(("lift", str(pct)))
     quarter = (lift_quarter or "").strip()
     if quarter and not quarter.upper().endswith("-Q3"):
-        qs += f"&lift_quarter={quarter}"
+        params.append(("lift_quarter", quarter))
     if q:
-        qs += f"&q={q}"
-    return qs
+        params.append(("q", q))
+    return "?" + urlencode(params)
 
 
 @app.get("/brands/{brand}/catalog.xlsx")
@@ -1122,6 +1116,12 @@ async def confirm_catalog_upload(
         incoming = json.loads(payload)
         if not isinstance(incoming, list) or not incoming:
             raise ValueError("empty")
+        # Replace deletes every SKU not in the file, so never act on a
+        # payload with no usable SKU rows (it would wipe the catalog).
+        if not all(isinstance(r, dict) for r in incoming) or not any(
+            str(r.get("sku") or "").strip() for r in incoming
+        ):
+            raise ValueError("no skus")
     except (TypeError, ValueError, json.JSONDecodeError):
         request.session["flash"] = "Catalog preview expired. Please upload the file again."
         return RedirectResponse(url=f"/brands/{brand}{_month_query(month, grain=grain)}", status_code=303)

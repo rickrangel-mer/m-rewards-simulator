@@ -437,9 +437,11 @@ def _safe_int(value, default=0) -> int:
     except (TypeError, ValueError):
         pass
     try:
-        return int(float(value))
-    except (TypeError, ValueError):
+        number = int(float(value))
+    except (TypeError, ValueError, OverflowError):
         return default
+    # Keep within Postgres `int` so a stray huge number cannot fail the insert.
+    return max(-(2**31), min(2**31 - 1, number))
 
 
 def _cocacola_ranked_sheet(wb):

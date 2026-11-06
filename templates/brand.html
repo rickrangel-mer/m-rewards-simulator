@@ -55,10 +55,10 @@
         <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
         <div class="seg" role="group" aria-label="Period">
           <a class="seg-btn{% if grain != 'quarter' %} is-on{% endif %}"
-             href="/brands/{{ brand }}?month={{ selected_month }}{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search }}{% endif %}">Month</a>
+             href="/brands/{{ brand }}?month={{ selected_month }}{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">Month</a>
           {% for qopt in quarter_options %}
           <a class="seg-btn{% if grain == 'quarter' and period.period_label == qopt.label %} is-on{% endif %}"
-             href="/brands/{{ brand }}?month={{ qopt.month }}&amp;grain=quarter{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search }}{% endif %}">{{ qopt.label }}</a>
+             href="/brands/{{ brand }}?month={{ qopt.month }}&amp;grain=quarter{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">{{ qopt.label }}</a>
           {% endfor %}
         </div>
         <label class="month-select">
@@ -307,7 +307,7 @@
   <div class="scenario-grid" id="budget-scenarios">
     {% for row in scenarios if row.key != 'lift' %}
     <a class="scenario-card{% if row.key == scenario %} is-on{% endif %}" data-scenario="{{ row.key }}"
-       href="/brands/{{ brand }}?month={{ selected_month }}{% if grain == 'quarter' %}&amp;grain=quarter{% endif %}&amp;scenario={{ row.key }}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search }}{% endif %}">
+       href="/brands/{{ brand }}?month={{ selected_month }}{% if grain == 'quarter' %}&amp;grain=quarter{% endif %}&amp;scenario={{ row.key }}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">
       <span class="metric-label">{{ row.label }}</span>
       {% if row.key != 'all' %}
       <strong>{{ row.total_label }}</strong>
