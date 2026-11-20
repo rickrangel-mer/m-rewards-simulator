@@ -468,7 +468,20 @@
     </div>
   </div>
 
+  {% set base_href = "/brands/" ~ brand ~ "?month=" ~ selected_month ~ ("&grain=quarter" if grain == 'quarter' else "") ~ ("&scenario=" ~ scenario if scenario and scenario != 'all' else "") ~ ("&fc_months=" ~ forecast_settings.horizon if forecast_settings.horizon != 6 else "") ~ ("&q=" ~ (search | urlencode) if search else "") %}
+  <div class="forecast-reference">
+    <span class="metric-label">Launch reference</span>
+    <div class="seg" role="group" aria-label="Launch reference">
+      {% for ref in forecast_references %}
+      <a class="seg-btn{% if forecast_settings.reference == ref.key %} is-on{% endif %}"
+         href="{{ base_href }}{% if ref.key != forecast_reference_default %}&fc_ref={{ ref.key }}{% endif %}">{{ ref.label }}</a>
+      {% endfor %}
+    </div>
+    <span class="metric-sub">A past launch used as a guide for any brand. The baseline always comes from this brand's own orders; the reference only sets where the sliders start.</span>
+  </div>
+
   <form method="get" action="/brands/{{ brand }}" class="forecast-controls" id="forecast-form">
+    {% if forecast_settings.reference != forecast_reference_default %}<input type="hidden" name="fc_ref" value="{{ forecast_settings.reference }}" />{% endif %}
     <input type="hidden" name="month" value="{{ selected_month }}" />
     {% if grain == 'quarter' %}<input type="hidden" name="grain" value="quarter" />{% endif %}
     {% if scenario and scenario != 'all' %}<input type="hidden" name="scenario" value="{{ scenario }}" />{% endif %}
@@ -483,8 +496,8 @@
         <input type="range" id="fc_{{ lift.key }}" name="fc_{{ lift.key }}" min="-100" max="200" step="1" value="{{ lift.value }}" data-signed="1" />
         <span class="metric-sub">
           {% if lift.measured_pct is not none %}
-          {{ benchmark.brand_name }} launch: {{ '+' if lift.measured_pct > 0 else '' }}{{ lift.measured_pct | round(0) | int }}%{% if not lift.counted %}, inside a normal month{% endif %}
-          {% else %}No launch measurement{% endif %}
+          {{ benchmark.brand_name }}: {{ '+' if lift.measured_pct > 0 else '' }}{{ lift.measured_pct | round(0) | int }}%{% if not lift.counted %}, inside a normal month{% endif %}
+          {% else %}No reference: normal months only{% endif %}
         </span>
       </div>
       {% endfor %}
@@ -494,14 +507,14 @@
         </label>
         <input type="range" id="fc_redeem" name="fc_redeem" min="0" max="100" step="0.1" value="{{ forecast_settings.redeem_pct }}" />
         <span class="metric-sub">
-          {% if benchmark %}{{ benchmark.brand_name }} launch: {{ benchmark.redeem_pct | pct }} of {{ "{:,}".format(benchmark.eligible_stores) }} stores that could{% else %}Share of stores able to afford a reward{% endif %}
+          {% if benchmark %}{{ benchmark.brand_name }}: {{ benchmark.redeem_pct | pct }} of {{ "{:,}".format(benchmark.eligible_stores) }} stores that could{% else %}Share of stores able to afford a reward{% endif %}
         </span>
       </div>
     </div>
     <div class="forecast-actions">
       <button type="submit" class="button">Update forecast</button>
-      <a class="button secondary" href="/brands/{{ brand }}?month={{ selected_month }}{% if grain == 'quarter' %}&amp;grain=quarter{% endif %}{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">Reset to {{ benchmark.brand_name if benchmark else 'defaults' }}</a>
-      <span class="metric-sub">Lifts change each behavior's normal monthly rate. {% if benchmark %}Defaults are the {{ benchmark.label }}, counted only where it fell outside the range of the three months before.{% endif %}</span>
+      <a class="button secondary" href="{{ base_href }}{% if forecast_settings.reference != forecast_reference_default %}&fc_ref={{ forecast_settings.reference }}{% endif %}">Reset sliders</a>
+      <span class="metric-sub">Lifts change each behavior's normal monthly rate. {% if benchmark %}Starting values come from the {{ benchmark.label }}: a behavior's change counts only where that launch moved it outside the range of the three months before.{% else %}All lifts start at 0%.{% endif %}</span>
     </div>
   </form>
 

@@ -13,7 +13,10 @@ Points come from four behaviors, measured from the brand's own orders:
 Each behavior's normal monthly rate comes from the average of the last three
 complete months. Launch-lift sliders raise or lower those rates. Their
 defaults come from a measured launch (see ``benchmarks/``), counted only when
-the launch month fell outside the normal month-to-month range.
+the launch month fell outside the normal month-to-month range. A reference
+launch is guidance for any brand, not a property of one: every JSON file in
+``benchmarks/`` is offered, the most recent launch is the default, and "No
+launch effect" forecasts from the brand's normal months alone.
 
 Points carry over month to month in a wallet. Redeeming is optional: each
 month a share of the stores that can afford the cheapest reward redeem. A
@@ -35,7 +38,9 @@ import pandas as pd
 
 from simulator import format_usd, normalize_reward
 
-BENCHMARK_PATH = Path(__file__).parent / "benchmarks" / "red_bull_2026_10.json"
+BENCHMARK_DIR = Path(__file__).parent / "benchmarks"
+NO_REFERENCE = "none"
+NO_REFERENCE_LABEL = "No launch effect"
 
 BEHAVIORS = (
     ("regulars", "Regulars buying their usual lines",
@@ -82,13 +87,24 @@ def _clamp_number(value, default: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, number))
 
 
-def load_benchmark(path: Path | None = None) -> dict | None:
-    """The measured launch whose lifts and redemption rate seed the sliders."""
-    path = path or BENCHMARK_PATH
-    try:
-        return json.loads(Path(path).read_text())
-    except (OSError, ValueError):
-        return None
+def load_benchmarks(directory: Path | None = None) -> list[dict]:
+    """Every measured launch in ``benchmarks/``, most recent launch first.
+
+    Each gets a ``key`` (its file name without .json) for the page's selector.
+    Unreadable files are skipped.
+    """
+    directory = Path(directory or BENCHMARK_DIR)
+    out = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            bench = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(bench, dict) or not isinstance(bench.get("lifts"), dict):
+            continue
+        bench["key"] = path.stem
+        out.append(bench)
+    return sorted(out, key=lambda b: (str(b.get("launch_month", "")), b["key"]), reverse=True)
 
 
 def default_settings(benchmark: dict | None = None) -> dict:
@@ -128,6 +144,35 @@ def settings_query(settings: dict, benchmark: dict | None = None) -> list[tuple[
     if settings["horizon"] != defaults["horizon"]:
         pairs.append(("fc_months", str(settings["horizon"])))
     return pairs
+
+
+def resolve_settings(params, benchmarks: list[dict] | None = None) -> tuple[dict, dict | None, list[tuple[str, str]]]:
+    """Pick the reference launch from ``fc_ref``, then read the sliders against it.
+
+    Returns (settings, chosen reference or None, query pairs that differ from
+    the defaults). An unknown ``fc_ref`` falls back to the default reference.
+    """
+    params = params or {}
+    benchmarks = load_benchmarks() if benchmarks is None else benchmarks
+    default_key = benchmarks[0]["key"] if benchmarks else NO_REFERENCE
+    key = str(params.get("fc_ref") or default_key).strip()
+    bench = None
+    if key != NO_REFERENCE:
+        bench = next((b for b in benchmarks if b["key"] == key), None)
+        if bench is None:
+            key = default_key
+            bench = benchmarks[0] if benchmarks else None
+    settings = parse_settings(params, bench)
+    settings["reference"] = key
+    query = ([("fc_ref", key)] if key != default_key else []) + settings_query(settings, bench)
+    return settings, bench, query
+
+
+def reference_choices(benchmarks: list[dict]) -> list[dict]:
+    """Selector rows: each measured launch, then the no-effect option."""
+    rows = [{"key": b["key"], "label": b.get("label") or b["key"]} for b in benchmarks]
+    rows.append({"key": NO_REFERENCE, "label": NO_REFERENCE_LABEL})
+    return rows
 
 
 # ---------------------------------------------------------------------------

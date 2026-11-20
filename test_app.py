@@ -2052,7 +2052,22 @@ def test_launch_forecast_section_shows_points_payout_and_balance(persist_store):
     assert "Still in the market" in section
     assert 'id="forecast-form"' in section
     assert 'name="fc_regulars"' in section
-    assert "Red Bull launch" in section
+    # Red Bull is offered as a reference on another brand's page, next to "No launch effect".
+    assert "Launch reference" in section
+    assert "Red Bull launch, October 2026" in section
+    assert "No launch effect" in section
+
+
+def test_launch_forecast_without_a_reference_starts_lifts_at_zero(persist_store):
+    orders_patch, skus_patch, today_patch = _forecast_client()
+    with orders_patch, skus_patch, today_patch:
+        client = TestClient(webapp.app)
+        default = _html_between(client.get("/brands/coca-cola").text, "launch-forecast")
+        none = _html_between(client.get("/brands/coca-cola?fc_ref=none").text, "launch-forecast")
+    assert 'id="fc_new_store_basket" name="fc_new_store_basket" min="-100" max="200" step="1" value="76"' in default
+    assert 'id="fc_new_store_basket" name="fc_new_store_basket" min="-100" max="200" step="1" value="0"' in none
+    assert 'name="fc_ref" value="none"' in none
+    assert "All lifts start at 0%." in none
 
 
 def test_launch_forecast_sliders_change_the_numbers(persist_store):

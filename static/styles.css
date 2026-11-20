@@ -1608,3 +1608,15 @@ body[data-theme="ferrera"] .brand-nav a.active {
 .launch-forecast .budget-table-block .table-wrap {
   max-height: none;
 }
+
+.forecast-reference {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+.forecast-reference .metric-sub {
+  flex: 1 1 20rem;
+}

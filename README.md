@@ -37,6 +37,25 @@ python rewards_analysis.py
 pytest
 ```
 
+## Try it locally without Postgres (demo mode)
+
+Demo mode runs the full web app on files in `demo_data/` instead of Postgres. It reads Athena once to fetch a brand, never connects to Postgres (database variables are removed from the process and connection attempts raise), and saves every edit back to `demo_data/`. That folder holds store-level orders and is git-ignored.
+
+Needs the same Athena AWS variables as the cron service (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `ATHENA_S3_STAGING`).
+
+```bash
+pip install -r requirements.txt
+python demo.py fetch --brand-name "Red Bull"
+python demo.py serve
+```
+
+Then open http://localhost:8080. You are signed in as a demo operator.
+
+- `fetch` pulls the last 12 complete months of orders (`--months` to change), points per SKU from the points ledger, and rewards from past redemptions. Run it once per brand; `--brand-name` is Athena's `brand_name` (for example `"Monster"`). Use `--vendor-name` when the M-Rewards vendor name differs, and `--slug` / `--label` to rename it in the app.
+- A brand with no M-Rewards points yet starts every SKU at 0 points; set proposed points on the page.
+- **Pull order history** in demo mode refreshes that brand's local files from Athena.
+- Delete `demo_data/<slug>/` to start a brand over.
+
 ## Railway setup
 
 Create one project with **Postgres** plus **two services** from this repo.
@@ -89,12 +108,12 @@ After the first successful deploy, trigger the cron service once (or run with `R
 The brand page's **Launch forecast** section projects the next 3, 6 or 12 months from the brand's own orders (`forecast.py`):
 
 - **Where the points come from.** Each store's purchases in the last three complete months are tagged as regulars buying their usual lines, regulars trying new items, returning stores, or new stores, then replayed month by month. Replaying real months keeps real order sizes, so stores cross reward costs the way they actually do.
-- **Launch lifts.** Sliders raise or lower each behavior's normal monthly rate. Defaults come from a measured launch in `benchmarks/` (today: Red Bull, October 2026). A lift only counts toward the default when the launch month fell outside the range of the three months before it.
+- **Launch lifts.** Sliders raise or lower each behavior's normal monthly rate. The baseline always comes from the brand's own orders. A **launch reference** only sets where the sliders start: every file in `benchmarks/` is offered on every brand page (most recent launch selected by default), plus **No launch effect**. Today there is one reference, Red Bull, October 2026. A measured change only becomes a starting value when the launch month fell outside the range of the three months before it.
 - **Points carry over.** Each month, the slider's share of stores that can afford the cheapest reward redeem. A redeeming store claims every reward it can afford, cheapest first, and each claim spends that reward's points. Unredeemed points stay in the market and are shown as the outstanding balance.
 
 The forecast needs six complete months of orders (three months, each compared with the three before it).
 
-To refresh or add a benchmark (needs the Athena AWS variables; does not touch Postgres):
+To refresh a reference or add another launch (needs the Athena AWS variables; does not touch Postgres). Each new file shows up as a choice on every brand page:
 
 ```bash
 python calibrate_launch.py --brand-name "Red Bull" --launch 2026-10 --out benchmarks/red_bull_2026_10.json

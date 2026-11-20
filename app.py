@@ -98,10 +98,10 @@ from forecast import (
     HORIZONS,
     LIFTS,
     forecast_launch,
-    load_benchmark,
+    load_benchmarks,
     monthly_points,
-    parse_settings,
-    settings_query,
+    reference_choices,
+    resolve_settings,
 )
 
 BASE_DIR = Path(__file__).parent
@@ -714,12 +714,12 @@ def brand_page_context(
     bulk_value: int = 100,
     grain: str = "month",
     scenario: str = SCENARIO_ALL,
-    forecast_settings: dict | None = None,
+    forecast_params=None,
 ):
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
-    benchmark = load_benchmark()
-    forecast_settings = forecast_settings or parse_settings({}, benchmark)
+    benchmarks = load_benchmarks()
+    forecast_settings, benchmark, forecast_query = resolve_settings(forecast_params or {}, benchmarks)
     rows = apply_proposed_to_rows(skus_df, proposed)
     if search:
         needle = search.lower()
@@ -789,8 +789,10 @@ def brand_page_context(
         "forecast_settings": forecast_settings,
         "forecast_lifts": forecast_lift_controls(forecast_settings, benchmark),
         "forecast_horizons": HORIZONS,
-        "forecast_query": settings_query(forecast_settings, benchmark),
-        "forecast_qs": urlencode(settings_query(forecast_settings, benchmark)),
+        "forecast_query": forecast_query,
+        "forecast_qs": urlencode(forecast_query),
+        "forecast_references": reference_choices(benchmarks),
+        "forecast_reference_default": benchmarks[0]["key"] if benchmarks else "none",
         "benchmark": benchmark,
         "scenario": scenario,
         "scenarios": scenarios,
@@ -826,7 +828,6 @@ def brand_page(
 
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
-    forecast_settings = parse_settings(request.query_params, load_benchmark())
     raw, state, error = load_orders_or_error()
     if error:
         return error_page(request, "Data unavailable", error, 503)
@@ -854,7 +855,7 @@ def brand_page(
         flash=flash,
         grain=grain,
         scenario=scenario,
-        forecast_settings=forecast_settings,
+        forecast_params=request.query_params,
     )
     ctx["open_new_brand"] = open_new_brand
     return TEMPLATES.TemplateResponse(request, "brand.html", ctx)
@@ -913,9 +914,7 @@ async def simulate_brand(
     scenario = parse_scenario(scenario)
     bulk_value = parse_form_int(bulk_value, default=100)
     form = await request.form()
-    benchmark = load_benchmark()
-    forecast_settings = parse_settings(form, benchmark)
-    forecast_pairs = settings_query(forecast_settings, benchmark)
+    _settings, _bench, forecast_pairs = resolve_settings(form)
     rewards = parse_reward_form(form)
     if not rewards:
         rewards = [
@@ -979,7 +978,7 @@ async def simulate_brand(
             bulk_value=bulk_value,
             grain=grain,
             scenario=scenario,
-            forecast_settings=forecast_settings,
+            forecast_params=form,
         ),
     )
 

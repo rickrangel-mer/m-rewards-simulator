@@ -6,7 +6,10 @@ from forecast import (
     behavior_profile,
     forecast_launch,
     launch_effect,
-    load_benchmark,
+    NO_REFERENCE,
+    load_benchmarks,
+    reference_choices,
+    resolve_settings,
     monthly_points,
     parse_settings,
     segment_month,
@@ -176,8 +179,56 @@ def test_settings_default_to_benchmark_and_clamp():
     assert parse_settings({"fc_months": "5"}, bench)["horizon"] == DEFAULT_HORIZON
 
 
+def _write_bench(directory, stem, launch, basket_default, redeem):
+    import json
+    (directory / f"{stem}.json").write_text(json.dumps({
+        "label": f"{stem} launch", "brand_name": stem, "launch_month": launch,
+        "redeem_pct": redeem, "eligible_stores": 100,
+        "lifts": {"new_store_basket": {"default_pct": basket_default, "measured_pct": basket_default, "outside_normal": True}},
+    }))
+
+
+def test_any_launch_in_benchmarks_can_be_the_reference(tmp_path):
+    _write_bench(tmp_path, "older_brand", "2026-07", 20, 12.0)
+    _write_bench(tmp_path, "newer_brand", "2026-10", 76, 9.9)
+    (tmp_path / "broken.json").write_text("{not json")
+    benches = load_benchmarks(tmp_path)
+    assert [b["key"] for b in benches] == ["newer_brand", "older_brand"]
+
+    # Default: the most recent launch, and nothing extra in the URL.
+    settings, bench, query = resolve_settings({}, benches)
+    assert bench["key"] == "newer_brand"
+    assert settings["lifts"]["new_store_basket"] == 76
+    assert query == []
+
+    # Another launch's numbers when picked.
+    settings, bench, query = resolve_settings({"fc_ref": "older_brand"}, benches)
+    assert bench["key"] == "older_brand"
+    assert settings["lifts"]["new_store_basket"] == 20
+    assert settings["redeem_pct"] == 12.0
+    assert query == [("fc_ref", "older_brand")]
+
+    # No reference: every lift at 0 and the generic redemption rate.
+    settings, bench, query = resolve_settings({"fc_ref": NO_REFERENCE}, benches)
+    assert bench is None
+    assert set(settings["lifts"].values()) == {0}
+    assert settings["redeem_pct"] == 10.0
+    assert ("fc_ref", NO_REFERENCE) in query
+
+    # Unknown keys fall back to the default.
+    assert resolve_settings({"fc_ref": "nope"}, benches)[1]["key"] == "newer_brand"
+    assert [r["key"] for r in reference_choices(benches)] == ["newer_brand", "older_brand", NO_REFERENCE]
+
+
+def test_no_benchmarks_means_no_launch_effect(tmp_path):
+    settings, bench, query = resolve_settings({}, load_benchmarks(tmp_path))
+    assert bench is None
+    assert settings["reference"] == NO_REFERENCE
+    assert query == []
+
+
 def test_checked_in_red_bull_benchmark_loads():
-    bench = load_benchmark()
+    bench = next(b for b in load_benchmarks() if b["key"] == "red_bull_2026_10")
     assert bench["brand_name"] == "Red Bull"
     assert bench["launch_month"] == "2026-10"
     assert 0 < bench["redeem_pct"] < 100
