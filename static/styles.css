@@ -1340,20 +1340,6 @@ body[data-theme="ferrera"] .brand-nav a.active {
   font-variant-numeric: tabular-nums;
 }
 
-.lift-form {
-  gap: 0.45rem;
-}
-
-.lift-form input[type="number"],
-.lift-form select {
-  min-width: 0;
-  width: 100%;
-}
-
-.lift-form .button {
-  align-self: flex-start;
-}
-
 .upload-dialog {
   border: 0;
   border-radius: 18px;
@@ -1486,3 +1472,139 @@ body[data-theme="ferrera"] .brand-nav a.active {
   .period-bar, .seg { width: 100%; }
 }
 
+
+/* Launch forecast. Behavior colors are a fixed, colorblind-checked order. */
+.launch-forecast {
+  --mix-regulars: #2a78d6;
+  --mix-new_items: #eb6834;
+  --mix-returning: #1baf7a;
+  --mix-new_stores: #eda100;
+  margin-top: 0.15rem;
+}
+
+.forecast-controls {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.95rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg) 40%, white);
+}
+
+.forecast-sliders {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.85rem 1.25rem;
+}
+
+.forecast-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.forecast-slider label {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 650;
+}
+
+.forecast-slider output {
+  font-variant-numeric: tabular-nums;
+}
+
+.forecast-slider input[type="range"] {
+  width: 100%;
+  accent-color: var(--cta);
+}
+
+.forecast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 0.85rem;
+}
+
+.forecast-actions .metric-sub {
+  flex: 1 1 18rem;
+}
+
+.forecast-kpis > div.is-lead {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 30%, white);
+}
+
+.forecast-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.15rem 1.5rem;
+  align-items: start;
+  margin-bottom: 1.15rem;
+}
+
+.mix-bar {
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  margin-bottom: 0.75rem;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.mix-seg { min-width: 2px; }
+.mix-seg.mix-regulars, .mix-dot.mix-regulars { background: var(--mix-regulars); }
+.mix-seg.mix-new_items, .mix-dot.mix-new_items { background: var(--mix-new_items); }
+.mix-seg.mix-returning, .mix-dot.mix-returning { background: var(--mix-returning); }
+.mix-seg.mix-new_stores, .mix-dot.mix-new_stores { background: var(--mix-new_stores); }
+
+.mix-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 650;
+}
+
+.mix-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+
+.balance-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 11rem;
+}
+
+.balance-track {
+  flex: 1;
+  height: 8px;
+}
+
+.balance-bar {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 0 4px 4px 0;
+  background: color-mix(in srgb, var(--bar) 45%, white);
+}
+
+.balance-cell .num {
+  min-width: 6.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1100px) {
+  .forecast-board { grid-template-columns: 1fr; }
+}
+
+.launch-forecast .budget-table-block .table-wrap {
+  max-height: none;
+}

@@ -84,6 +84,24 @@ Env vars (cron service only):
 
 After the first successful deploy, trigger the cron service once (or run with `REFRESH_BACKFILL=1`) so Postgres is populated before anyone opens the app.
 
+## Launch forecast
+
+The brand page's **Launch forecast** section projects the next 3, 6 or 12 months from the brand's own orders (`forecast.py`):
+
+- **Where the points come from.** Each store's purchases in the last three complete months are tagged as regulars buying their usual lines, regulars trying new items, returning stores, or new stores, then replayed month by month. Replaying real months keeps real order sizes, so stores cross reward costs the way they actually do.
+- **Launch lifts.** Sliders raise or lower each behavior's normal monthly rate. Defaults come from a measured launch in `benchmarks/` (today: Red Bull, October 2026). A lift only counts toward the default when the launch month fell outside the range of the three months before it.
+- **Points carry over.** Each month, the slider's share of stores that can afford the cheapest reward redeem. A redeeming store claims every reward it can afford, cheapest first, and each claim spends that reward's points. Unredeemed points stay in the market and are shown as the outstanding balance.
+
+The forecast needs six complete months of orders (three months, each compared with the three before it).
+
+To refresh or add a benchmark (needs the Athena AWS variables; does not touch Postgres):
+
+```bash
+python calibrate_launch.py --brand-name "Red Bull" --launch 2026-10 --out benchmarks/red_bull_2026_10.json
+```
+
+It infers points per SKU from the points ledger, measures each behavior against the months before launch, and measures how often stores that could afford a reward redeemed.
+
 ## Excel config
 
 The three git workbooks seed Postgres **once** (empty `brand_skus` for that brand). After that, the website catalog is the source of truth for the web app and the Athena refresh SKU list.

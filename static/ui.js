@@ -252,9 +252,9 @@
   function onSubmit(event) {
     var form = event.target;
     if (!form || !form.id) return;
-    if (form.id !== "month-form" && form.id !== "lift-scenario" && form.id !== "sim-form" && form.id !== "brand-refresh-form") return;
+    if (form.id !== "month-form" && form.id !== "forecast-form" && form.id !== "sim-form" && form.id !== "brand-refresh-form") return;
     event.preventDefault();
-    if (form.id === "month-form" || form.id === "lift-scenario") {
+    if (form.id === "month-form" || form.id === "forecast-form") {
       var params = new URLSearchParams(new FormData(form));
       var action = form.getAttribute("action") || location.pathname;
       swapPage(action + "?" + params.toString(), true);
@@ -267,7 +267,19 @@
     swapPage(action, true, { method: "POST", body: body });
   }
 
+  // Forecast sliders show their value as they move.
+  function onSliderInput(event) {
+    var input = event.target;
+    if (!input || input.type !== "range" || !input.id) return;
+    var out = document.querySelector('output[for="' + input.id + '"]');
+    if (!out) return;
+    var value = Number(input.value);
+    var signed = input.dataset.signed === "1" && value > 0 ? "+" : "";
+    out.textContent = signed + value + "%";
+  }
+
   if (history.scrollRestoration) history.scrollRestoration = "manual";
+  document.addEventListener("input", onSliderInput);
   document.addEventListener("click", onClick);
   document.addEventListener("submit", onSubmit);
   window.addEventListener("popstate", function (event) {

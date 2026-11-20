@@ -70,6 +70,7 @@ from simulator import (
     build_points_lookup,
     build_sku_points,
     cents_to_dollar_input,
+    last_complete_month,
     compute_store_penetration,
     dollars_to_cents,
     format_usd,
@@ -77,20 +78,15 @@ from simulator import (
     orders_for_period,
     annotate_points_per_dollar,
     period_points_issued,
-    lift_quarter_choices,
-    lift_quarter_key,
     next_reward_name,
     parse_form_int,
     parse_grain,
     parse_imported_points,
     proposed_points_template_frame,
-    parse_lift_pct,
-    parse_lift_quarter,
     parse_scenario,
     period_copy,
     period_months,
     reward_thresholds,
-    DEFAULT_LIFT_PCT,
     SCENARIO_ALL,
     simulate,
     sku_point_totals,
@@ -98,11 +94,40 @@ from simulator import (
     unique_reward_names,
 )
 from refresh_orders import run_brand_refresh
+from forecast import (
+    HORIZONS,
+    LIFTS,
+    forecast_launch,
+    load_benchmark,
+    monthly_points,
+    parse_settings,
+    settings_query,
+)
 
 BASE_DIR = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 TEMPLATES.env.filters["usd"] = format_usd
 TEMPLATES.env.filters["dollar_input"] = cents_to_dollar_input
+
+
+def _points_filter(value) -> str:
+    try:
+        return f"{round(float(value)):,}"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _pct_filter(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "0%"
+    text = f"{number:.1f}".rstrip("0").rstrip(".")
+    return f"{text}%"
+
+
+TEMPLATES.env.filters["points"] = _points_filter
+TEMPLATES.env.filters["pct"] = _pct_filter
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 RESERVED_SLUGS = frozenset({
@@ -408,7 +433,6 @@ def empty_scenarios(rewards: list[tuple] | None = None) -> list[dict]:
         {"key": "all", "label": "Pay all rewards", "hint": "Every reward each store qualifies for", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
         {"key": "lowest", "label": "Lowest first", "hint": "Each store redeems the cheapest qualifying reward", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
         {"key": "highest", "label": "Highest first", "hint": "Each store redeems the most expensive qualifying reward", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
-        {"key": "lift", "label": "30% lift from Q3", "hint": "Q3 units × 1.3 (+30%), then lowest first", "budget": budget, "sku_totals": sku, "total_cents": 0, "total_label": "$0"},
     ]
 
 
@@ -596,6 +620,44 @@ def download_proposed_points_template():
     )
 
 
+def forecast_end_month(raw, valid: set, today: date | None = None):
+    """Last complete calendar month that has orders for these SKUs."""
+    months = available_months(raw, valid)
+    if not months:
+        return None
+    last_y, last_m = last_complete_month(today or period_today())
+    complete = [m for m in months if m <= f"{last_y:04d}-{last_m:02d}"]
+    return complete[-1] if complete else None
+
+
+def build_forecast(raw, skus_df, proposed: dict, rewards, settings: dict) -> dict | None:
+    """Launch forecast from this brand's own last complete months."""
+    if raw is None or raw.empty or skus_df is None or skus_df.empty:
+        return None
+    sku_points = {k: v for k, v in build_sku_points(skus_df, proposed).items() if v > 0}
+    end = forecast_end_month(raw, set(sku_points))
+    if not end:
+        return None
+    monthly = monthly_points(raw, sku_points, last_month=end)
+    return forecast_launch(monthly, end, rewards, settings)
+
+
+def forecast_lift_controls(settings: dict, benchmark: dict | None) -> list[dict]:
+    """Slider rows with the measured launch value beside each one."""
+    rows = []
+    measured = (benchmark or {}).get("lifts") or {}
+    for key, label, _field in LIFTS:
+        info = measured.get(key) or {}
+        rows.append({
+            "key": key,
+            "label": label,
+            "value": int(round(settings["lifts"][key])),
+            "measured_pct": info.get("measured_pct"),
+            "counted": bool(info.get("outside_normal")),
+        })
+    return rows
+
+
 def run_brand_simulation(
     raw,
     skus_df,
@@ -605,14 +667,10 @@ def run_brand_simulation(
     grain: str = "month",
     today: date | None = None,
     scenario: str = SCENARIO_ALL,
-    lift_pct: int = DEFAULT_LIFT_PCT,
-    lift_quarter: str | None = None,
 ):
     year, mon = parse_month(month_label)
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
-    lift_pct = parse_lift_pct(lift_pct)
-    lift_year, lift_q = parse_lift_quarter(lift_quarter, year)
     today = today or period_today()
     valid = set(skus_df["sku"].astype(str))
     points_lookup = build_points_lookup(skus_df, proposed)
@@ -625,22 +683,7 @@ def run_brand_simulation(
     thresholds = reward_thresholds(rewards)
     store_points = simulate(period_orders, sku_to_title, points_lookup, thresholds, sku_points=sku_points)
     results = summarize_results(store_points, thresholds)
-    scenarios = build_budget_scenarios(
-        store_points,
-        rewards,
-        period_orders,
-        skus_df,
-        proposed,
-        raw,
-        year,
-        valid,
-        sku_to_title,
-        points_lookup,
-        today=today,
-        lift_pct=lift_pct,
-        lift_year=lift_year,
-        lift_quarter=lift_q,
-    )
+    scenarios = build_budget_scenarios(store_points, rewards, period_orders, skus_df, proposed)
     chosen = select_scenario(scenarios, scenario)
     sku_totals = annotate_points_per_dollar(chosen["sku_totals"], chosen["budget"]["total_cents"])
     return {
@@ -653,8 +696,6 @@ def run_brand_simulation(
         "scenario_meta": chosen,
         "period_months": months,
         "period": period_copy(grain, year, mon, months, today=today),
-        "lift_pct": lift_pct,
-        "lift_quarter": lift_quarter_key(lift_year, lift_q),
     }
 
 
@@ -673,12 +714,12 @@ def brand_page_context(
     bulk_value: int = 100,
     grain: str = "month",
     scenario: str = SCENARIO_ALL,
-    lift_pct: int = DEFAULT_LIFT_PCT,
-    lift_quarter: str | None = None,
+    forecast_settings: dict | None = None,
 ):
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
-    lift_pct = parse_lift_pct(lift_pct)
+    benchmark = load_benchmark()
+    forecast_settings = forecast_settings or parse_settings({}, benchmark)
     rows = apply_proposed_to_rows(skus_df, proposed)
     if search:
         needle = search.lower()
@@ -700,8 +741,6 @@ def brand_page_context(
             rewards,
             grain=grain,
             scenario=scenario,
-            lift_pct=lift_pct,
-            lift_quarter=lift_quarter,
         )
         results = sim["results"]
         budget = sim["budget"]
@@ -711,11 +750,7 @@ def brand_page_context(
         scenarios = sim["scenarios"]
         scenario = sim["scenario"]
         scenario_meta = sim["scenario_meta"]
-        lift_pct = sim["lift_pct"]
-        lift_quarter = sim["lift_quarter"]
     else:
-        lift_year, lift_q = parse_lift_quarter(lift_quarter, period_today().year)
-        lift_quarter = lift_quarter_key(lift_year, lift_q)
         results = empty_results(rewards)
         scenarios = empty_scenarios(rewards)
         scenario_meta = select_scenario(scenarios, scenario)
@@ -750,12 +785,13 @@ def brand_page_context(
         ),
         "grain": grain,
         "quarter_options": available_quarters(months),
-        "lift_pct": lift_pct,
-        "lift_quarter": lift_quarter,
-        "lift_quarter_options": lift_quarter_choices(
-            months,
-            int(str(selected_month)[:4]) if selected_month else period_today().year,
-        ),
+        "forecast": build_forecast(raw, skus_df, proposed, rewards, forecast_settings),
+        "forecast_settings": forecast_settings,
+        "forecast_lifts": forecast_lift_controls(forecast_settings, benchmark),
+        "forecast_horizons": HORIZONS,
+        "forecast_query": settings_query(forecast_settings, benchmark),
+        "forecast_qs": urlencode(settings_query(forecast_settings, benchmark)),
+        "benchmark": benchmark,
         "scenario": scenario,
         "scenarios": scenarios,
         "scenario_meta": scenario_meta,
@@ -783,8 +819,6 @@ def brand_page(
     q: str | None = None,
     grain: str | None = None,
     scenario: str | None = None,
-    lift: str | None = None,
-    lift_quarter: str | None = None,
 ):
     brand, denied = require_brand(request, brand)
     if denied:
@@ -792,7 +826,7 @@ def brand_page(
 
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
-    lift_pct = parse_lift_pct(lift)
+    forecast_settings = parse_settings(request.query_params, load_benchmark())
     raw, state, error = load_orders_or_error()
     if error:
         return error_page(request, "Data unavailable", error, 503)
@@ -820,8 +854,7 @@ def brand_page(
         flash=flash,
         grain=grain,
         scenario=scenario,
-        lift_pct=lift_pct,
-        lift_quarter=lift_quarter,
+        forecast_settings=forecast_settings,
     )
     ctx["open_new_brand"] = open_new_brand
     return TEMPLATES.TemplateResponse(request, "brand.html", ctx)
@@ -871,8 +904,6 @@ async def simulate_brand(
     action: str = Form("simulate"),
     grain: str = Form("month"),
     scenario: str = Form("all"),
-    lift: str = Form(""),
-    lift_quarter: str = Form(""),
 ):
     brand, denied = require_brand(request, brand)
     if denied:
@@ -880,9 +911,11 @@ async def simulate_brand(
 
     grain = parse_grain(grain)
     scenario = parse_scenario(scenario)
-    lift_pct = parse_lift_pct(lift)
     bulk_value = parse_form_int(bulk_value, default=100)
     form = await request.form()
+    benchmark = load_benchmark()
+    forecast_settings = parse_settings(form, benchmark)
+    forecast_pairs = settings_query(forecast_settings, benchmark)
     rewards = parse_reward_form(form)
     if not rewards:
         rewards = [
@@ -899,7 +932,7 @@ async def simulate_brand(
             patch[str(sku)] = int(bulk_value)
         set_proposed(brand, patch)
         request.session["flash"] = f"Applied {bulk_value} points to {len(selected)} SKUs."
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario, lift_pct, lift_quarter)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario, forecast_pairs)}", status_code=303)
 
     if action == "add_reward":
         new_name = (form.get("new_reward_name") or "").strip() or next_reward_name(rewards)
@@ -908,7 +941,7 @@ async def simulate_brand(
         rewards.append((new_name, new_pts, new_cents))
         set_rewards(brand, rewards)
         set_proposed(brand, patch)
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario, lift_pct, lift_quarter)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario, forecast_pairs)}", status_code=303)
 
     if action.startswith("remove_reward_"):
         idx = parse_form_int(action.rsplit("_", 1)[-1], default=-1)
@@ -916,7 +949,7 @@ async def simulate_brand(
             rewards.pop(idx)
         set_rewards(brand, rewards)
         set_proposed(brand, patch)
-        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario, lift_pct, lift_quarter)}", status_code=303)
+        return RedirectResponse(url=f"/brands/{brand}{_month_query(month, q, grain, scenario, forecast_pairs)}", status_code=303)
 
     proposed = set_proposed(brand, patch)
 
@@ -946,8 +979,7 @@ async def simulate_brand(
             bulk_value=bulk_value,
             grain=grain,
             scenario=scenario,
-            lift_pct=lift_pct,
-            lift_quarter=lift_quarter,
+            forecast_settings=forecast_settings,
         ),
     )
 
@@ -1026,20 +1058,14 @@ def _month_query(
     q: str = "",
     grain: str = "month",
     scenario: str = "all",
-    lift_pct: int = DEFAULT_LIFT_PCT,
-    lift_quarter: str = "",
+    extra: list[tuple[str, str]] | None = None,
 ) -> str:
     params = [("month", month or "")]
     if parse_grain(grain) == "quarter":
         params.append(("grain", "quarter"))
     if parse_scenario(scenario) != SCENARIO_ALL:
         params.append(("scenario", parse_scenario(scenario)))
-    pct = parse_lift_pct(lift_pct)
-    if pct != DEFAULT_LIFT_PCT:
-        params.append(("lift", str(pct)))
-    quarter = (lift_quarter or "").strip()
-    if quarter and not quarter.upper().endswith("-Q3"):
-        params.append(("lift_quarter", quarter))
+    params.extend(extra or [])
     if q:
         params.append(("q", q))
     return "?" + urlencode(params)
