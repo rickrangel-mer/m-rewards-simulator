@@ -385,7 +385,7 @@ def test_brand_page_sections_place_controls_with_outcomes():
     assert "Pay all rewards" in budget
     assert "Lowest first" in budget
     assert "Highest first" in budget
-    assert "30% lift from Q3" in budget
+    assert "lift from Q3" not in budget
     assert "Reward cost" in budget
     assert "SKU point totals" in budget
     assert "Search SKUs" not in budget
@@ -1051,7 +1051,7 @@ def test_brand_clicks_update_in_place_without_reloading():
     assert "scrollY" in js
     assert "sim-form" in js
     assert "month-form" in js
-    assert "lift-scenario" in js
+    assert "forecast-form" in js
     assert "brand-refresh-form" in js
     assert 'parts.length !== 2' in js
     assert 'getAttribute("action")' in js
@@ -1063,7 +1063,7 @@ def test_brand_clicks_update_in_place_without_reloading():
         html = client.get("/brands/coca-cola").text
     assert "requestSubmit" in html
     assert 'id="month-form"' in html
-    assert 'id="lift-scenario"' in html
+    assert 'id="forecast-form"' in html
     assert 'id="sim-form"' in html
 
 
@@ -1842,7 +1842,7 @@ def test_create_brand_optional_reward_value(persist_store):
     assert 'value="8.50"' in page.text
 
 
-def test_budget_scenarios_exclusive_redeem_and_q3_lift(persist_store):
+def test_budget_scenarios_exclusive_redeem(persist_store):
     persist_store.rewards["coca-cola"] = [("Low", 100, 800), ("High", 400, 2000)]
     orders_patch = patch.object(
         webapp,
@@ -1856,9 +1856,7 @@ def test_budget_scenarios_exclusive_redeem_and_q3_lift(persist_store):
         stacked = client.get("/brands/coca-cola?month=2026-07&grain=quarter")
         lowest = client.get("/brands/coca-cola?month=2026-07&grain=quarter&scenario=lowest")
         highest = client.get("/brands/coca-cola?month=2026-07&grain=quarter&scenario=highest")
-        lifted = client.get("/brands/coca-cola?month=2026-07&scenario=q3_lift")
-        negative = client.get("/brands/coca-cola?month=2026-07&scenario=lift&lift=-50&lift_quarter=2026-Q3")
-        other_quarter = client.get("/brands/coca-cola?month=2026-07&scenario=lift&lift=30&lift_quarter=2026-Q1")
+        old_lift = client.get("/brands/coca-cola?month=2026-07&grain=quarter&scenario=lift&lift=-50&lift_quarter=2026-Q3")
 
     # Q3: S1=400 pts, S2=500 pts. Both earn Low ($8). Only S1/S2 both earn High ($20) too.
     # Pay all: 2*$8 + 2*$20 = $56. Lowest: 2*$8 = $16. Highest: 2*$20 = $40.
@@ -1868,30 +1866,10 @@ def test_budget_scenarios_exclusive_redeem_and_q3_lift(persist_store):
     assert "Lowest first" in lowest.text
     assert "$40" in _html_between(highest.text, "budget-calculator")
     assert "Highest first" in highest.text
-    assert "30% lift from Q3 2026" in lifted.text
-    # Lifted units 18*1.3=23.4; both stores still clear High, but the lift pays
-    # lowest first: 2 × $8 = $16. SKU points issued are 18*50*1.3 = 1,170.
-    lift_start = lifted.text.index('id="lift-scenario"')
-    lift_card = lifted.text[lift_start:lifted.text.index("</form>", lift_start)]
-    assert "then lowest first" in lift_card
-    assert "then pay all rewards" not in lifted.text
-    assert "$16" in lift_card
-    assert "$56" not in lift_card
-    assert "1,170" in _html_between(lifted.text, "budget-calculator") or "1170" in _html_between(lifted.text, "budget-calculator")
-    assert 'name="lift"' in lifted.text
-    assert 'name="lift_quarter"' in lifted.text
-    assert "Q1 2026" in lifted.text
-
-    neg_budget = _html_between(negative.text, "budget-calculator")
-    q1_budget = _html_between(other_quarter.text, "budget-calculator")
-    assert "-50% lift from Q3 2026" in neg_budget
-    assert 'value="-50"' in neg_budget
-    # -50% of Q3 units (18 × 0.5 × 50 pts) issues 450 points. Both stores miss the $20 reward.
-    assert "450" in neg_budget
-    assert ">High</td>" in neg_budget
-    assert "30% lift from Q1 2026" in q1_budget
-    assert 'value="2026-Q1" selected' in q1_budget
-    assert "No catalog units in this period." in q1_budget
+    # The uniform-lift card is gone; old links land on Pay all rewards.
+    assert old_lift.status_code == 200
+    assert "$56" in _html_between(old_lift.text, "budget-calculator")
+    assert 'name="lift"' not in old_lift.text
 
 
 # ---------------------------------------------------------------------------
@@ -2032,3 +2010,100 @@ def test_search_with_ampersand_survives_redirect():
             follow_redirects=False,
         )
     assert response.headers["location"] == "/brands/coca-cola?month=2026-07&q=a%26b+c"
+
+
+# ---------------------------------------------------------------------------
+# Launch forecast
+# ---------------------------------------------------------------------------
+
+def _six_months_orders():
+    """S1 buys 100 units of SKU-A (50 pts) every month, January to June."""
+    return pd.DataFrame({
+        "store_id": ["S1"] * 6,
+        "sku": ["SKU-A"] * 6,
+        "order_date": pd.to_datetime([f"2026-{m:02d}-10" for m in range(1, 7)]),
+        "total_quantity": [100] * 6,
+    })
+
+
+def _forecast_client():
+    return (
+        patch.object(webapp, "load_orders_or_error",
+                     return_value=(_six_months_orders(), {"last_refreshed_month": "2026-06"}, None)),
+        patch.object(webapp, "load_brand_skus", return_value=_sample_skus()),
+        patch.object(webapp, "period_today", return_value=date(2026, 7, 15)),
+    )
+
+
+def test_launch_forecast_section_shows_points_payout_and_balance(persist_store):
+    persist_store.rewards["coca-cola"] = [("Hat", 3000, 3000), ("Hoodie", 5000, 5000)]
+    orders_patch, skus_patch, today_patch = _forecast_client()
+    with orders_patch, skus_patch, today_patch:
+        client = TestClient(webapp.app)
+        html = client.get("/brands/coca-cola?fc_redeem=100&fc_months=3").text
+    section = _html_between(html, "launch-forecast")
+    assert "Launch forecast" in section
+    assert "July 2026–September 2026" in section
+    assert "April–June 2026" in section
+    # 5,000 points a month for 3 months; each month the store claims Hat then Hoodie when affordable.
+    assert "15,000" in section
+    assert "Regulars buying their usual lines" in section
+    assert "Rewards claimed" in section
+    assert "Still in the market" in section
+    assert 'id="forecast-form"' in section
+    assert 'name="fc_regulars"' in section
+    # Red Bull is offered as a reference on another brand's page, next to "No launch effect".
+    assert "Launch reference" in section
+    assert "Red Bull launch, October 2026" in section
+    assert "No launch effect" in section
+
+
+def test_launch_forecast_without_a_reference_starts_lifts_at_zero(persist_store):
+    orders_patch, skus_patch, today_patch = _forecast_client()
+    with orders_patch, skus_patch, today_patch:
+        client = TestClient(webapp.app)
+        default = _html_between(client.get("/brands/coca-cola").text, "launch-forecast")
+        none = _html_between(client.get("/brands/coca-cola?fc_ref=none").text, "launch-forecast")
+    assert 'id="fc_new_store_basket" name="fc_new_store_basket" min="-100" max="200" step="1" value="76"' in default
+    assert 'id="fc_new_store_basket" name="fc_new_store_basket" min="-100" max="200" step="1" value="0"' in none
+    assert 'name="fc_ref" value="none"' in none
+    assert "All lifts start at 0%." in none
+
+
+def test_launch_forecast_sliders_change_the_numbers(persist_store):
+    persist_store.rewards["coca-cola"] = [("Hat", 3000, 3000)]
+    orders_patch, skus_patch, today_patch = _forecast_client()
+    with orders_patch, skus_patch, today_patch:
+        client = TestClient(webapp.app)
+        base = _html_between(client.get("/brands/coca-cola?fc_months=3&fc_redeem=0").text, "launch-forecast")
+        lifted = _html_between(client.get("/brands/coca-cola?fc_months=3&fc_redeem=0&fc_regulars=20").text, "launch-forecast")
+    assert "15,000" in base
+    assert "18,000" in lifted
+    assert "+3,000" in lifted
+    assert 'value="20"' in lifted
+
+
+def test_launch_forecast_needs_enough_history(persist_store):
+    orders_patch, skus_patch = _mocked_client()
+    with orders_patch, skus_patch:
+        html = TestClient(webapp.app).get("/brands/coca-cola").text
+    section = _html_between(html, "launch-forecast")
+    assert "needs six complete months" in section
+    assert "Rewards claimed" not in section
+
+
+def test_simulate_keeps_forecast_settings(persist_store):
+    orders_patch, skus_patch, today_patch = _forecast_client()
+    with orders_patch, skus_patch, today_patch:
+        client = TestClient(webapp.app)
+        page = client.get("/brands/coca-cola?fc_regulars=25&fc_months=12").text
+        sim_form = page[page.index('id="sim-form"'):page.index("</form>", page.index('id="sim-form"'))]
+        assert 'name="fc_regulars" value="25"' in sim_form
+        assert 'name="fc_months" value="12"' in sim_form
+        posted = client.post("/brands/coca-cola/simulate", data={
+            "month": "2026-06", "fc_regulars": "25", "fc_months": "12",
+            "reward_name": "Hat", "reward_points": "3000", "reward_value": "30",
+        })
+    section = _html_between(posted.text, "launch-forecast")
+    assert 'value="25"' in section
+    assert "Month 12" in section

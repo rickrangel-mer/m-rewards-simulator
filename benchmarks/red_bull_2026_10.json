@@ -1,0 +1,75 @@
+{
+  "label": "Red Bull launch, October 2026",
+  "brand_name": "Red Bull",
+  "launch_month": "2026-10",
+  "normal_months": [
+    "2026-09",
+    "2026-08",
+    "2026-07"
+  ],
+  "measured_on": "2026-11-20",
+  "program_skus": 34,
+  "launch_points": 1676450,
+  "launch_mix_pct": {
+    "regulars": 49.6,
+    "new_items": 38.7,
+    "returning": 2.5,
+    "new_stores": 9.2
+  },
+  "lifts": {
+    "regulars": {
+      "field": "keep_rate",
+      "launch": 0.5507,
+      "normal_mean": 0.5644,
+      "normal_min": 0.5079,
+      "normal_max": 0.6027,
+      "measured_pct": -2.4,
+      "outside_normal": false,
+      "default_pct": 0
+    },
+    "new_items": {
+      "field": "trial_rate",
+      "launch": 0.4261,
+      "normal_mean": 0.4393,
+      "normal_min": 0.4054,
+      "normal_max": 0.4824,
+      "measured_pct": -3.0,
+      "outside_normal": false,
+      "default_pct": 0
+    },
+    "returning": {
+      "field": "return_rate",
+      "launch": 0.1093,
+      "normal_mean": 0.1289,
+      "normal_min": 0.1099,
+      "normal_max": 0.1429,
+      "measured_pct": -15.2,
+      "outside_normal": true,
+      "default_pct": -15
+    },
+    "new_stores": {
+      "field": "new_store_rate",
+      "launch": 0.0784,
+      "normal_mean": 0.1097,
+      "normal_min": 0.0815,
+      "normal_max": 0.1526,
+      "measured_pct": -28.5,
+      "outside_normal": true,
+      "default_pct": -28
+    },
+    "new_store_basket": {
+      "field": "new_store_points",
+      "launch": 1513.2353,
+      "normal_mean": 861.6315,
+      "normal_min": 810.4762,
+      "normal_max": 949.5536,
+      "measured_pct": 75.6,
+      "outside_normal": true,
+      "default_pct": 76
+    }
+  },
+  "cheapest_reward_points": 3000.0,
+  "eligible_stores": 142,
+  "redeeming_stores": 14,
+  "redeem_pct": 9.9
+}

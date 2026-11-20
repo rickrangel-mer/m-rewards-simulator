@@ -26,8 +26,9 @@
   <input type="hidden" name="month" value="{{ selected_month }}" />
   <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
   <input type="hidden" name="scenario" value="{{ scenario or 'all' }}" />
-  <input type="hidden" name="lift" value="{{ lift_pct }}" />
-  <input type="hidden" name="lift_quarter" value="{{ lift_quarter }}" />
+  {% for name, value in forecast_query %}
+  <input type="hidden" name="{{ name }}" value="{{ value }}" />
+  {% endfor %}
 </form>
 
 <section class="panel results" id="simulation-results">
@@ -50,15 +51,16 @@
         {% if scenario and scenario != 'all' %}
         <input type="hidden" name="scenario" value="{{ scenario }}" />
         {% endif %}
-        <input type="hidden" name="lift" value="{{ lift_pct }}" />
-        <input type="hidden" name="lift_quarter" value="{{ lift_quarter }}" />
+        {% for name, value in forecast_query %}
+        <input type="hidden" name="{{ name }}" value="{{ value }}" />
+        {% endfor %}
         <input type="hidden" name="grain" value="{{ grain or 'month' }}" />
         <div class="seg" role="group" aria-label="Period">
           <a class="seg-btn{% if grain != 'quarter' %} is-on{% endif %}"
-             href="/brands/{{ brand }}?month={{ selected_month }}{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">Month</a>
+             href="/brands/{{ brand }}?month={{ selected_month }}{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}{% if forecast_qs %}&amp;{{ forecast_qs }}{% endif %}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">Month</a>
           {% for qopt in quarter_options %}
           <a class="seg-btn{% if grain == 'quarter' and period.period_label == qopt.label %} is-on{% endif %}"
-             href="/brands/{{ brand }}?month={{ qopt.month }}&amp;grain=quarter{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">{{ qopt.label }}</a>
+             href="/brands/{{ brand }}?month={{ qopt.month }}&amp;grain=quarter{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}{% if forecast_qs %}&amp;{{ forecast_qs }}{% endif %}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">{{ qopt.label }}</a>
           {% endfor %}
         </div>
         <label class="month-select">
@@ -305,45 +307,15 @@
   </div>
 
   <div class="scenario-grid" id="budget-scenarios">
-    {% for row in scenarios if row.key != 'lift' %}
+    {% for row in scenarios %}
     <a class="scenario-card{% if row.key == scenario %} is-on{% endif %}" data-scenario="{{ row.key }}"
-       href="/brands/{{ brand }}?month={{ selected_month }}{% if grain == 'quarter' %}&amp;grain=quarter{% endif %}&amp;scenario={{ row.key }}&amp;lift={{ lift_pct }}&amp;lift_quarter={{ lift_quarter }}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">
+       href="/brands/{{ brand }}?month={{ selected_month }}{% if grain == 'quarter' %}&amp;grain=quarter{% endif %}&amp;scenario={{ row.key }}{% if forecast_qs %}&amp;{{ forecast_qs }}{% endif %}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">
       <span class="metric-label">{{ row.label }}</span>
       {% if row.key != 'all' %}
       <strong>{{ row.total_label }}</strong>
       {% endif %}
       <span class="metric-sub">{{ row.hint }}</span>
     </a>
-    {% endfor %}
-    {% for row in scenarios if row.key == 'lift' %}
-    <form method="get" action="/brands/{{ brand }}" class="scenario-card lift-form{% if scenario == 'lift' %} is-on{% endif %}" id="lift-scenario">
-      <input type="hidden" name="month" value="{{ selected_month }}" />
-      {% if grain == 'quarter' %}
-      <input type="hidden" name="grain" value="quarter" />
-      {% endif %}
-      {% if search %}
-      <input type="hidden" name="q" value="{{ search }}" />
-      {% endif %}
-      <input type="hidden" name="scenario" value="lift" />
-      <span class="metric-label">{{ row.label }}</span>
-      <strong>{{ row.total_label }}</strong>
-      <label>
-        Lift %
-        <input type="number" name="lift" step="5" value="{{ lift_pct }}" aria-label="Lift percent" />
-      </label>
-      <label>
-        Quarter
-        <select name="lift_quarter" aria-label="Lift quarter" onchange="if (this.form.requestSubmit) this.form.requestSubmit(); else this.form.submit();">
-          {% for opt in lift_quarter_options %}
-          <option value="{{ opt.value }}" {% if opt.value == lift_quarter %}selected{% endif %}>{{ opt.label }}</option>
-          {% else %}
-          <option value="{{ lift_quarter }}" selected>{{ lift_quarter }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <button type="submit" class="button secondary">Apply lift</button>
-      <span class="metric-sub">{{ row.hint }}</span>
-    </form>
     {% endfor %}
   </div>
 
@@ -476,5 +448,219 @@
       </div>
     </div>
   </div>
+</section>
+<section class="panel launch-forecast" id="launch-forecast">
+  <div class="section-header">
+    <div>
+      <p class="section-eyebrow">Forecast</p>
+      <h2>Launch forecast</h2>
+      {% if forecast %}
+      <p class="section-caption">Next {{ forecast.horizon }} months ({{ forecast.start_label }}–{{ forecast.end_label }}), built from how this brand's stores bought in {{ forecast.base_label }}. Points carry over month to month. Each month {{ forecast_settings.redeem_pct | pct }} of stores that can afford a reward redeem, claiming every reward they can afford, cheapest first.</p>
+      {% else %}
+      <p class="section-caption">The forecast needs six complete months of orders with SKU points, so each of the last three months can be compared with the three before it.</p>
+      {% endif %}
+    </div>
+    <div class="seg" role="group" aria-label="Forecast length">
+      {% for months_opt in forecast_horizons %}
+      <a class="seg-btn{% if forecast_settings.horizon == months_opt %} is-on{% endif %}"
+         href="/brands/{{ brand }}?month={{ selected_month }}{% if grain == 'quarter' %}&amp;grain=quarter{% endif %}{% if scenario and scenario != 'all' %}&amp;scenario={{ scenario }}{% endif %}{% for name, value in forecast_query if name != 'fc_months' %}&amp;{{ name }}={{ value }}{% endfor %}{% if months_opt != 6 %}&amp;fc_months={{ months_opt }}{% endif %}{% if search %}&amp;q={{ search | urlencode }}{% endif %}">{{ months_opt }} months</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% set base_href = "/brands/" ~ brand ~ "?month=" ~ selected_month ~ ("&grain=quarter" if grain == 'quarter' else "") ~ ("&scenario=" ~ scenario if scenario and scenario != 'all' else "") ~ ("&fc_months=" ~ forecast_settings.horizon if forecast_settings.horizon != 6 else "") ~ ("&q=" ~ (search | urlencode) if search else "") %}
+  <div class="forecast-reference">
+    <span class="metric-label">Launch reference</span>
+    <div class="seg" role="group" aria-label="Launch reference">
+      {% for ref in forecast_references %}
+      <a class="seg-btn{% if forecast_settings.reference == ref.key %} is-on{% endif %}"
+         href="{{ base_href }}{% if ref.key != forecast_reference_default %}&fc_ref={{ ref.key }}{% endif %}">{{ ref.label }}</a>
+      {% endfor %}
+    </div>
+    <span class="metric-sub">A past launch used as a guide for any brand. The baseline always comes from this brand's own orders; the reference only sets where the sliders start.</span>
+  </div>
+
+  <form method="get" action="/brands/{{ brand }}" class="forecast-controls" id="forecast-form">
+    {% if forecast_settings.reference != forecast_reference_default %}<input type="hidden" name="fc_ref" value="{{ forecast_settings.reference }}" />{% endif %}
+    <input type="hidden" name="month" value="{{ selected_month }}" />
+    {% if grain == 'quarter' %}<input type="hidden" name="grain" value="quarter" />{% endif %}
+    {% if scenario and scenario != 'all' %}<input type="hidden" name="scenario" value="{{ scenario }}" />{% endif %}
+    {% if search %}<input type="hidden" name="q" value="{{ search }}" />{% endif %}
+    <input type="hidden" name="fc_months" value="{{ forecast_settings.horizon }}" />
+    <div class="forecast-sliders">
+      {% for lift in forecast_lifts %}
+      <div class="forecast-slider">
+        <label for="fc_{{ lift.key }}">{{ lift.label }}
+          <output for="fc_{{ lift.key }}">{{ '+' if lift.value > 0 else '' }}{{ lift.value }}%</output>
+        </label>
+        <input type="range" id="fc_{{ lift.key }}" name="fc_{{ lift.key }}" min="-100" max="200" step="1" value="{{ lift.value }}" data-signed="1" />
+        <span class="metric-sub">
+          {% if lift.measured_pct is not none %}
+          {{ benchmark.brand_name }}: {{ '+' if lift.measured_pct > 0 else '' }}{{ lift.measured_pct | round(0) | int }}%{% if not lift.counted %}, inside a normal month{% endif %}
+          {% else %}No reference: normal months only{% endif %}
+        </span>
+      </div>
+      {% endfor %}
+      <div class="forecast-slider">
+        <label for="fc_redeem">Stores that redeem each month
+          <output for="fc_redeem">{{ forecast_settings.redeem_pct | pct }}</output>
+        </label>
+        <input type="range" id="fc_redeem" name="fc_redeem" min="0" max="100" step="0.1" value="{{ forecast_settings.redeem_pct }}" />
+        <span class="metric-sub">
+          {% if benchmark %}{{ benchmark.brand_name }}: {{ benchmark.redeem_pct | pct }} of {{ "{:,}".format(benchmark.eligible_stores) }} stores that could{% else %}Share of stores able to afford a reward{% endif %}
+        </span>
+      </div>
+    </div>
+    <div class="forecast-actions">
+      <button type="submit" class="button">Update forecast</button>
+      <a class="button secondary" href="{{ base_href }}{% if forecast_settings.reference != forecast_reference_default %}&fc_ref={{ forecast_settings.reference }}{% endif %}">Reset sliders</a>
+      <span class="metric-sub">Lifts change each behavior's normal monthly rate. {% if benchmark %}Starting values come from the {{ benchmark.label }}: a behavior's change counts only where that launch moved it outside the range of the three months before.{% else %}All lifts start at 0%.{% endif %}</span>
+    </div>
+  </form>
+
+  {% if forecast %}
+  <div class="metrics forecast-kpis">
+    <div class="is-lead">
+      <span class="metric-label">Points to market</span>
+      <strong>{{ forecast.issued | points }}</strong>
+      <span class="metric-sub">Issued over {{ forecast.horizon }} months</span>
+    </div>
+    <div class="is-lead">
+      <span class="metric-label">Paid out in rewards</span>
+      <strong>{{ forecast.payout_label }}</strong>
+      <span class="metric-sub">{{ forecast.redeemed | points }} points redeemed ({{ forecast.redeemed_share | pct }} of issued)</span>
+    </div>
+    <div>
+      <span class="metric-label">Still in the market</span>
+      <strong>{{ forecast.outstanding | points }}</strong>
+      <span class="metric-sub">Points held at the end, worth about {{ forecast.outstanding_label }} if redeemed</span>
+    </div>
+    <div>
+      <span class="metric-label">From the launch lift</span>
+      {% set lift_points = forecast.issued - forecast.without_lift.issued %}
+      {% set lift_cents = forecast.payout_cents - forecast.without_lift.payout_cents %}
+      <strong>{{ '+' if lift_points > 0 else '' }}{{ lift_points | points }}</strong>
+      <span class="metric-sub">{{ '+' if lift_cents > 0 else '' }}{{ lift_cents | usd }} payout vs. a normal month's rates</span>
+    </div>
+  </div>
+
+  <div class="forecast-board">
+    <div class="budget-table-block">
+      <h3>Where the points come from</h3>
+      <p class="section-caption">Each store's purchases sorted by behavior, over the whole forecast.</p>
+      <div class="mix-bar" role="img" aria-label="Share of points by behavior">
+        {% for row in forecast.behaviors if row.points > 0 %}
+        <span class="mix-seg mix-{{ row.key }}" style="flex-grow: {{ row.share | round(3) }}" title="{{ row.label }}: {{ row.share | pct }}"></span>
+        {% endfor %}
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Behavior</th>
+              <th class="num">Stores / month</th>
+              <th class="num">Points</th>
+              <th class="num">Share</th>
+              <th class="num">From lift</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in forecast.behaviors %}
+            <tr>
+              <td><span class="mix-name"><i class="mix-dot mix-{{ row.key }}"></i>{{ row.label }}</span><span class="metric-sub">{{ row.desc }}</span></td>
+              <td class="num">{{ "{:,.0f}".format(row.stores_per_month) }}</td>
+              <td class="num">{{ row.points | points }}</td>
+              <td class="num">{{ row.share | pct }}</td>
+              <td class="num">{{ '+' if row.lift_points > 0 else '' }}{{ row.lift_points | points }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr>
+              <th>Total</th>
+              <th></th>
+              <th class="num">{{ forecast.issued | points }}</th>
+              <th class="num">100%</th>
+              <th class="num">{{ '+' if lift_points > 0 else '' }}{{ lift_points | points }}</th>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <div class="budget-table-block">
+      <h3>Rewards claimed</h3>
+      <p class="section-caption">Cheapest first: a redeeming store claims each reward it can afford, lowest point cost up.</p>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Reward</th>
+              <th class="num">Points</th>
+              <th class="num">Value</th>
+              <th class="num">Claims</th>
+              <th class="num">Points spent</th>
+              <th class="num">Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in forecast.rewards %}
+            <tr>
+              <td>{{ row.name }}</td>
+              <td class="num">{{ "{:,}".format(row.points) }}</td>
+              <td class="num">{{ row.value_label }}</td>
+              <td class="num">{{ "{:,}".format(row.claims) }}</td>
+              <td class="num">{{ row.points_spent | points }}</td>
+              <td class="num">{{ row.cost_label }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">Add a reward with a point cost to forecast redemptions.</td></tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr>
+              <th colspan="3">Total</th>
+              <th class="num">{{ "{:,}".format(forecast.rewards | sum(attribute='claims')) }}</th>
+              <th class="num">{{ forecast.redeemed | points }}</th>
+              <th class="num">{{ forecast.payout_label }}</th>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="budget-table-block">
+    <h3>Month by month</h3>
+    <p class="section-caption">Unredeemed points carry over, so the balance in the market keeps building.</p>
+    {% set max_out = forecast.months | map(attribute='outstanding') | max %}
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th class="num">Points issued</th>
+            <th class="num">Redeemed</th>
+            <th class="num">Payout</th>
+            <th class="num">Stores redeeming / able to</th>
+            <th>Still in the market</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in forecast.months %}
+          <tr>
+            <td>{{ row.label }}</td>
+            <td class="num">{{ row.issued_total | points }}</td>
+            <td class="num">{{ row.redeemed | points }}</td>
+            <td class="num">{{ row.payout_label }}</td>
+            <td class="num">{{ "{:,}".format(row.redeemers) }} of {{ "{:,}".format(row.eligible) }}</td>
+            <td><span class="balance-cell"><span class="balance-track"><span class="balance-bar" style="width: {{ (row.outstanding / max_out * 100) | round(1) if max_out else 0 }}%"></span></span><span class="num">{{ row.outstanding | points }}</span></span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
 </section>
 {% endblock %}

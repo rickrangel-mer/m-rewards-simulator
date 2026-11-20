@@ -5,3 +5,6 @@ __pycache__/
 .DS_Store
 .env
 *.csv
+
+# Demo mode: local store-level order data, never commit
+demo_data/
